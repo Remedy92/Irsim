@@ -1,5 +1,11 @@
 # IRsim — Interventional Radiology Navigation Trainer
 
+[![CI](https://github.com/Remedy92/Irsim/actions/workflows/ci.yml/badge.svg)](https://github.com/Remedy92/Irsim/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**Repository:** https://github.com/Remedy92/Irsim  
+**Live demo:** _(deploying — see Vercel link below)_
+
 An open-source, web-first simulator for practicing endovascular navigation: push a
 guidewire and sheath from a vascular access point to named anatomic targets, viewed in
 **both** an interactive 3D scene **and** a stylized 2D fluoroscopy image rendered from the

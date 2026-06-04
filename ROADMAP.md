@@ -56,6 +56,30 @@ sees it in both views, and gets a debrief — on generic anatomy, honestly frame
 - Instructor/cohort mode → triggers a formal intended-use / regulatory review before any
   sale or any move toward patient-specific use.
 
+## Physics findings (Phase 0)
+
+We built and unit-tested an **orientation-based Cosserat rod** (`src/sim/cosserat.ts`,
+Kugelstadt & Schömer + Bender's reference, cross-checked). The constraint solver is
+**verified correct**: inextensibility, bend deflection, **twist propagation (torque → tip
+rotation)**, quaternion normalization, stability, and lumen containment all pass
+(`src/sim/cosserat.test.ts`).
+
+**Confirmed limitation:** the uniform-`l0` feed (grow rest length from a pinned base)
+**buckles a pushed free rod inside a tube** instead of advancing the tip — the tip never
+progresses, the body accordions against the lumen wall. This reproduces the research's
+adversarial prediction (free-feeding a long real-time rod is the #1 risk; browser
+GPU-Cosserat does not exist). It is a *feeding-model* problem, not a stiffness tune.
+
+**Recommended fix — follow-the-leader feed:** the proximal body follows the path the tip
+has already carved (robust, no buckling), while the **distal tip stays a free Cosserat
+element** whose pre-shape + torque-driven director does the steering (= the cannulation
+skill). This keeps the validated Cosserat solver exactly where it matters and is how
+real-time endovascular sims (stEVE/BasicWireNav lineage) actually feed.
+
+**Research track (optional, higher fidelity):** full free Cosserat with frictional
+insertion contacts + an implicit/stiff solve (SOFA-BeamAdapter style). Not known to be
+real-time in-browser; pursue as a calibration oracle, not the shipping path.
+
 ## Standing risks
 
 - **Physics feel** is the top engineering risk. No browser GPU-Cosserat exists (proven work

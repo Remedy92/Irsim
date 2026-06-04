@@ -1,9 +1,16 @@
 {
   "name": "irsim",
   "version": "0.1.0",
-  "private": true,
   "description": "IRsim — open-source interventional radiology navigation trainer (web-first). Guidewire/sheath navigation through vascular anatomy, shown in both 3D and a stylized 2D fluoroscopy view.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Remedy92/Irsim.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Remedy92/Irsim/issues"
+  },
+  "homepage": "https://github.com/Remedy92/Irsim#readme",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",

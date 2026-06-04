@@ -23,7 +23,7 @@ import {
   WebGLRenderTarget
 } from "three";
 import { buildNormalAnatomy } from "../sim/anatomy";
-import { GUIDEWIRE, Rod } from "../sim/rod";
+import { CoaxialAssembly, CosseratRod, GUIDEWIRE, SHEATH } from "../sim/cosserat";
 import { useSim } from "../sim/store";
 import { makeAttenuationMaterial, makeTonemapMaterial } from "./fluoro";
 
@@ -35,18 +35,56 @@ interface MeshMaterials {
   atten: number;
 }
 
+/**
+ * Rebuild a TubeGeometry from a Cosserat rod's live node positions. Disposes the previous
+ * geometry first. The rod arrays grow/shrink as material is fed, so the curve is rebuilt
+ * every frame (Catmull-Rom needs ≥2 points; the rod keeps minNodes=3).
+ */
+function rebuildTube(mesh: Mesh, nodes: Vector3[], radius: number): void {
+  // Guard against a non-finite node: one NaN/undefined position poisons CatmullRomCurve3's
+  // arc-length table, so TubeGeometry indexes the point list with NaN and throws
+  // ("Cannot read properties of undefined") every frame — permanently wedging the render
+  // loop into a black screen. Keep the last good geometry instead of throwing.
+  for (let i = 0; i < nodes.length; i++) {
+    const p = nodes[i];
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return;
+  }
+  mesh.geometry.dispose();
+  const pts = nodes.slice();
+  const curve = new CatmullRomCurve3(pts);
+  mesh.geometry = new TubeGeometry(curve, Math.max(1, pts.length), radius, 6, false);
+}
+
 function Engine() {
   const gl = useThree((s) => s.gl);
   const size = useThree((s) => s.size);
 
   const anatomy = useMemo(() => buildNormalAnatomy(), []);
-  const rod = useMemo(() => new Rod(anatomy, "rcfa", GUIDEWIRE), [anatomy]);
+
+  // The chosen access side (right/left common femoral). Reactive so picking a different start
+  // rebuilds the instruments at that artery.
+  const accessId = useSim((s) => s.accessId);
+
+  // New Cosserat-XPBD instruments: a guidewire (inner) sliding inside a sheath (outer), both
+  // entering at the selected femoral access. The assembly couples them only through coax
+  // contact + friction (no hand-coded tie); each carries its own graded MaterialField, insertion
+  // boundary condition, and in-loop frictional wall contact. The wire and sheath are driven
+  // INDEPENDENTLY (see useFrame): there is no slaving between them — that coupling is physical,
+  // emerging from the coax contact alone. Replaces the legacy PBD rod.ts.
+  const assembly = useMemo(() => {
+    const startId = anatomy.access.some((a) => a.id === accessId) ? accessId : anatomy.access[0].id;
+    const inner = new CosseratRod(anatomy, startId, GUIDEWIRE);
+    const outer = new CosseratRod(anatomy, startId, SHEATH);
+    return new CoaxialAssembly(outer, inner);
+  }, [anatomy, accessId]);
 
   const rig = useMemo(() => {
     const scene = new Scene();
-    scene.background = new Color(0x0a0f14);
-    scene.add(new AmbientLight(0x90b0d0, 1.1));
-    const dir = new DirectionalLight(0xfff0e0, 1.4);
+    // monochrome planning scene: neutral near-black field, neutral fill + key (no colour cast),
+    // so the 3D view reads as part of the same grayscale console as the fluoro chrome.
+    scene.background = new Color(0x06080a);
+    scene.add(new AmbientLight(0xb8c2cc, 1.1));
+    const dir = new DirectionalLight(0xffffff, 1.5);
     dir.position.set(20, 40, 30);
     scene.add(dir);
 
@@ -59,11 +97,13 @@ function Engine() {
       const curve = new CatmullRomCurve3(br.points.map((p) => p.pos));
       const geo = new TubeGeometry(curve, br.points.length * 2, meanR, 14, false);
       const fluoro = makeAttenuationMaterial(0);
+      // vessel wall: translucent steel-grey (monochrome) rather than anatomical red.
       const mat3d = new MeshStandardMaterial({
-        color: 0xc0432f,
-        roughness: 0.42,
+        color: 0x6b757d,
+        roughness: 0.5,
+        metalness: 0.1,
         transparent: true,
-        opacity: 0.55
+        opacity: 0.42
       });
       const mesh = new Mesh(geo, fluoro);
       mesh.userData = { mat3d, fluoro, atten: br.attenuation } satisfies MeshMaterials;
@@ -71,13 +111,28 @@ function Engine() {
       meshes.push(mesh);
     }
 
-    // guidewire — geometry rebuilt each frame from rod nodes
+    // sheath (outer coaxial device) — wider, slightly less radio-dense than the wire.
+    const sheathFluoro = makeAttenuationMaterial(4.5);
+    const sheathMat3d = new MeshStandardMaterial({
+      color: 0xaab3bb,
+      metalness: 0.55,
+      roughness: 0.4,
+      transparent: true,
+      opacity: 0.7
+    });
+    const sheath = new Mesh(new BufferGeometry(), sheathFluoro);
+    sheath.userData = { mat3d: sheathMat3d, fluoro: sheathFluoro, atten: 1 } satisfies MeshMaterials;
+    sheath.frustumCulled = false;
+    scene.add(sheath);
+    meshes.push(sheath);
+
+    // guidewire (inner) — thin, bright metal, most radio-dense. Geometry rebuilt each frame.
     const wireFluoro = makeAttenuationMaterial(7.0);
     const wireMat3d = new MeshStandardMaterial({
-      color: 0xeaf2f6,
+      color: 0xeef3f7,
       metalness: 0.85,
       roughness: 0.25,
-      emissive: 0x223344,
+      emissive: 0x2a2f33,
       emissiveIntensity: 0.3
     });
     const wire = new Mesh(new BufferGeometry(), wireFluoro);
@@ -86,9 +141,10 @@ function Engine() {
     scene.add(wire);
     meshes.push(wire);
 
+    // target marker: bright white (the single high-salience signal, matching the UI accent).
     const target = new Mesh(
       new SphereGeometry(0.5, 20, 16),
-      new MeshBasicMaterial({ color: 0x49d08b, transparent: true, opacity: 0.85 })
+      new MeshBasicMaterial({ color: 0xf2f6f9, transparent: true, opacity: 0.9 })
     );
     scene.add(target);
 
@@ -102,7 +158,7 @@ function Engine() {
     postScene.add(new Mesh(new PlaneGeometry(2, 2), tonemap));
     const postCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    return { scene, camera, meshes, wire, target, rt, tonemap, postScene, postCam };
+    return { scene, camera, meshes, sheath, wire, target, rt, tonemap, postScene, postCam };
   }, [anatomy]);
 
   const dist = useRef(95);
@@ -164,14 +220,30 @@ function Engine() {
 
   useFrame((_, delta) => {
     const s = useSim.getState();
-    const h = Math.min(delta, 1 / 30);
+    // R3F can deliver delta = 0 (the first frame, a tab refocus, or two rAFs inside one ms).
+    // A non-positive/non-finite step makes the XPBD compliance α̃ = α/Δt_s² blow up to
+    // Infinity → NaN and permanently corrupts the rod. Treat it as "no time elapsed": clamp
+    // the upper end for stability and skip the physics step (we still render the valid state).
+    const h = Number.isFinite(delta) && delta > 0 ? Math.min(delta, 1 / 30) : 0;
     clock.current += h;
 
-    // input -> physics
-    rod.input.deployed = s.deployed;
-    rod.input.steer = s.steer;
-    rod.input.torque = s.torque;
-    rod.step(h);
+    // input -> physics. The wire and sheath are driven INDEPENDENTLY from their own store inputs
+    // through each rod's velocity-controlled insertion BC (deployed → feed velocity target,
+    // torque → hub roll target, steer → tip precurve scale). Neither follows the other: the soft
+    // wire tip leads or trails purely as the operator drives it, and the supportive coupling
+    // emerges from coax contact + friction in the assembly — not a hand-coded slave ratio.
+    const inner = assembly.inner;
+    const outer = assembly.outer;
+    inner.input.deployed = s.wire.deployed;
+    inner.input.steer = s.wire.steer;
+    inner.input.torque = s.wire.torque;
+    // the sheath has no pre-shaped tip, so steer is a guidewire-only control (SHEATH carries
+    // tipNodes:0 / tipCurve:0 — any steer input is physically inert); it is otherwise independently
+    // advanced/retracted + torqued.
+    outer.input.deployed = s.sheath.deployed;
+    outer.input.steer = 0;
+    outer.input.torque = s.sheath.torque;
+    if (h > 0) assembly.step(h);
 
     // contrast injection ramp/decay
     if (s.injectSeq !== lastSeq.current) {
@@ -180,9 +252,9 @@ function Engine() {
     }
     contrast.current = Math.max(0, contrast.current - h * 0.13);
 
-    // rebuild guidewire tube
-    rig.wire.geometry.dispose();
-    rig.wire.geometry = new TubeGeometry(new CatmullRomCurve3(rod.x.slice()), rod.n, 0.08, 6, false);
+    // rebuild the instrument tubes from the live Cosserat node positions
+    rebuildTube(rig.sheath, outer.x, outer.rodRadius + 0.05);
+    rebuildTube(rig.wire, inner.x, 0.08);
 
     // shared C-arm camera
     const rao = (s.rao * Math.PI) / 180;
@@ -196,10 +268,11 @@ function Engine() {
     rig.camera.up.set(0, 1, 0);
     rig.camera.lookAt(ISO);
 
-    // per-frame attenuation: walls faint, contrast fills lumen dark, wire always dark
+    // per-frame attenuation: walls faint, contrast fills lumen dark, instruments always dark
     for (const m of rig.meshes) {
       const ud = m.userData as MeshMaterials;
       if (m === rig.wire) ud.fluoro.uniforms.uSigma.value = 7.0;
+      else if (m === rig.sheath) ud.fluoro.uniforms.uSigma.value = 4.5;
       else ud.fluoro.uniforms.uSigma.value = (0.05 + contrast.current * 2.6) * ud.atten;
     }
     rig.tonemap.uniforms.uTime.value += h;
@@ -226,14 +299,14 @@ function Engine() {
       gl.render(rig.postScene, rig.postCam);
     }
 
-    // metrics (throttled)
-    const tipToTarget = rod.tip().distanceTo(target.pos);
+    // metrics (throttled) — driven off the navigating guidewire
+    const tipToTarget = inner.tip().distanceTo(target.pos);
     if (tipToTarget < target.acceptance) reachedFor.current += h;
     else reachedFor.current = 0;
     if (clock.current - reportAt.current > 0.12) {
       reportAt.current = clock.current;
       s.setMetrics({
-        depth: rod.deployedLength(),
+        depth: inner.deployedLength(),
         tipToTarget,
         reached: reachedFor.current > 0.4,
         contrast: contrast.current

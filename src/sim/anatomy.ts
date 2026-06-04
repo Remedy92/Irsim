@@ -131,6 +131,15 @@ export function buildNormalAnatomy(): Anatomy {
         pos: rightIliac.points[rightIliac.points.length - 1].pos.clone(),
         dir: new Vector3(0.32, 1, 0.04).normalize(),
         branchId: "iliac_r"
+      },
+      {
+        // Mirror of the right access across the sagittal plane: the left femoral sits at +x and
+        // the iliac runs up toward the bifurcation at x=0, so the insertion direction tilts to −x.
+        id: "lcfa",
+        name: "Left common femoral artery",
+        pos: leftIliac.points[leftIliac.points.length - 1].pos.clone(),
+        dir: new Vector3(-0.32, 1, 0.04).normalize(),
+        branchId: "iliac_l"
       }
     ],
     targets: [
