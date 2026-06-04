@@ -1,0 +1,32 @@
+{
+  "name": "irsim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "IRsim — open-source interventional radiology navigation trainer (web-first). Guidewire/sheath navigation through vascular anatomy, shown in both 3D and a stylized 2D fluoroscopy view.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@react-three/fiber": "^9.0.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.171.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.171.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/ui": "^4.1.8",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.1",
+    "vitest": "^4.1.8"
+  }
+}
