@@ -37,6 +37,13 @@ export interface ElemMat {
   GAsz: number;
   /** Kirchhoff (Φ=0, no shear deformation) — the default for a thin wire. */
   kirchhoff: boolean;
+  /**
+   * Rest curvature (precurve) as the rest rotation-vector across the element (RAW RADIANS, in the
+   * element/director frame): the total bend the unloaded element holds. The bending strain is the
+   * relative nodal rotation MINUS this, so a J/angled tip expresses its shape with zero internal
+   * moment at rest. {0,0,0} = straight. Recomputed per frame from steer·restCurvature.
+   */
+  kappa0: { x: number; y: number; z: number };
 }
 
 /**
@@ -113,10 +120,12 @@ export function localDeformation(
   out: { ubar: number; thetaI: Vector3; thetaJ: Vector3 } = { ubar: 0, thetaI: new Vector3(), thetaJ: new Vector3() }
 ): { ubar: number; thetaI: Vector3; thetaJ: Vector3 } {
   out.ubar = ln - ellRest;
-  // R_eᵀ R(q): compose as a quaternion to avoid an extra matrix product, then log
-  const qe = mat3ToQuat(Re, _qe);
-  logSO3(quatToMat3(_qe.copy(qe).conjugate().multiply(qi), _tmpM), out.thetaI);
-  logSO3(quatToMat3(_qe2.copy(qe).conjugate().multiply(qj), _tmpM2), out.thetaJ);
+  // θ̄ = logSO3(R_eᵀ R(q)) = log(conj(q_e) · q). Compute conj(q_e) ONCE into its own scratch — do
+  // NOT conjugate q_e in place, or the second call sees a double-conjugated (wrong) frame.
+  mat3ToQuat(Re, _qe);
+  _qeConj.copy(_qe).conjugate();
+  logSO3(quatToMat3(_relI.copy(_qeConj).multiply(qi), _tmpM), out.thetaI);
+  logSO3(quatToMat3(_relJ.copy(_qeConj).multiply(qj), _tmpM2), out.thetaJ);
   return out;
 }
 
@@ -231,7 +240,9 @@ export function transformK(Kloc: Float64Array, Re: Mat3, out: Float64Array = new
 const _qj = new Quaternion();
 const _qm = new Quaternion();
 const _qe = new Quaternion();
-const _qe2 = new Quaternion();
+const _qeConj = new Quaternion();
+const _relI = new Quaternion();
+const _relJ = new Quaternion();
 const _Rm = mat3();
 const _tmpM = mat3();
 const _tmpM2 = mat3();

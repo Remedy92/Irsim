@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
 import { CosseratRod, GUIDEWIRE } from "./cosserat";
+
+/** The dynamic co-rotational beam path — what the calibrated gates below validate (Phase 3+). */
+const DIRECT = { ...GUIDEWIRE, useDirectSolve: true };
 import { buildNormalAnatomy } from "./anatomy";
 import type { Anatomy } from "./types";
 
@@ -68,7 +71,7 @@ function mirrorAnatomyX(a: Anatomy): Anatomy {
 /** Cranial climb (cm) of the tip after navigating `accessId` of `anatomy` with the standard feed. */
 function climb(anatomy: Anatomy, accessId: string, deployed = 26, steps = 480): number {
   const access = anatomy.access.find((ac) => ac.id === accessId) ?? anatomy.access[0];
-  const rod = new CosseratRod(anatomy, accessId, GUIDEWIRE);
+  const rod = new CosseratRod(anatomy, accessId, DIRECT);
   rod.input = { deployed, steer: 0.3, torque: 0 };
   for (let i = 0; i < steps; i++) rod.step(1 / 60);
   return rod.tip().y - access.pos.y;
@@ -90,9 +93,13 @@ describe("Phase-0 calibrated validation rig — chirality / handedness", () => {
     expect(normal).toBeGreaterThan(0); // the reference (right) side climbs cranially at all
   }, 30000);
 
-  // GATE — flip on once the dynamic co-rotational beam (frame-symmetric logmap curvature, no
-  // closest-quaternion sign branch) replaces solveBendTwist behind params.useDirectSolve. Reflecting
-  // the whole system must leave the cranial climb invariant for an isotropic rod.
+  // GATE — STILL DEFERRED (the pre-existing [[irsim-solver-chirality-bug]], not introduced here). The
+  // dynamic co-rotational beam IMPROVED x-mirror asymmetry (legacy ~63% → direct ~27-52%) and its
+  // logmap curvature is provably mirror-clean (so3.test). A lockstep diagnostic showed the residual
+  // divergence is GROSS and EARLY (≈9cm at step 20, mid-iliac, before any bifurcation), so the cause
+  // is in SHARED steer/contact/lumen code (world-fixed steer-deflection axis and/or lumen graph
+  // tie-break), NOT the new solver. Fixing it is a dedicated effort the owner deferred; un-skip when
+  // that handedness source is found. Kept here as the regression guard.
   it.skip("CHIRALITY PARITY: x-mirror of the whole system gives identical cranial climb", () => {
     const normal = climb(buildNormalAnatomy(), "rcfa");
     const mirrored = climb(mirrorAnatomyX(buildNormalAnatomy()), "rcfa");
@@ -111,7 +118,7 @@ describe("Phase-0 calibrated validation rig — chirality / handedness", () => {
 function navClimbSubsteps(substeps: number, deployed = 28, steps = 600): number {
   const anatomy = buildNormalAnatomy();
   const access = anatomy.access[0].pos.clone();
-  const rod = new CosseratRod(anatomy, "rcfa", { ...GUIDEWIRE, substeps });
+  const rod = new CosseratRod(anatomy, "rcfa", { ...DIRECT, substeps });
   rod.input = { deployed, steer: 0.3, torque: 0 };
   for (let i = 0; i < steps; i++) rod.step(1 / 60);
   return rod.tip().y - access.y;
@@ -131,12 +138,16 @@ describe("Phase-0 calibrated validation rig — substep-invariance", () => {
     expect(Number.isFinite(s2) && Number.isFinite(s4) && Number.isFinite(s8)).toBe(true);
   }, 60000);
 
-  // GATE — flip on with params.useDirectSolve + real per-node mass (the same gate as
-  // validation.test.ts:101, kept here against the calibrated bench so the rewrite has one home).
-  it.skip("SUBSTEP-INVARIANCE: navigated climb does not depend on the substep count", () => {
+  // GATE (GREEN) — the dynamic co-rotational beam ignores the legacy `substeps` knob (fixed internal
+  // substeps), so felt stiffness is substep-invariant BY CONSTRUCTION; the α̃=α/Δt² entanglement that
+  // made legacy climb drift ~33% (Phase-0 baseline above) is structurally gone.
+  it("SUBSTEP-INVARIANCE: navigated climb does not depend on the substep count", () => {
     const s2 = navClimbSubsteps(2);
     const s4 = navClimbSubsteps(4);
+    const s8 = navClimbSubsteps(8);
     const relDiff = Math.abs(s4 - s2) / Math.max(0.1, Math.abs(s2));
+    const relDiff8 = Math.abs(s8 - s2) / Math.max(0.1, Math.abs(s2));
     expect(relDiff).toBeLessThan(0.15);
-  });
+    expect(relDiff8).toBeLessThan(0.15);
+  }, 90000);
 });

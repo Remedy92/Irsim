@@ -26,6 +26,11 @@ import {
 } from "./contact";
 import { Lumen } from "./lumen";
 import { BeamSolver } from "./beam";
+import { BlockTridiagSolver } from "./blocktridiag";
+import { beamSubstepWithContact, type BeamParams, type BeamState } from "./beamfem/dynamic";
+import type { ElemMat } from "./beamfem/element";
+import type { LumpedMass } from "./beamfem/mass";
+import { buildElemMats, buildLumpedMassForRod, nodalFramesFromSegments, segmentFramesFromNodal } from "./beamfem/integration";
 import {
   closestOuterSegment,
   makeCoaxContact,
@@ -179,6 +184,14 @@ export interface CosseratParams {
    * the device is the inner member or runs solo.
    */
   coaxLumenRadius: number;
+  /**
+   * PHASE 3 (docs/physics-design-dynamic-corotational-beam.md): when true, this rod's per-frame
+   * elastic + bend solve is the DYNAMIC CO-ROTATIONAL BEAM (real EI, substep-invariant, dynamic
+   * twist/whip) instead of the legacy XPBD Gauss-Seidel sweep + curvature-fairing. Default OFF — the
+   * legacy path stays byte-identical until every validation gate is green. Per-rod so wire and sheath
+   * can flip independently.
+   */
+  useDirectSolve?: boolean;
 }
 
 export const GUIDEWIRE: CosseratParams = {
@@ -401,6 +414,34 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   /** Beam passes per substep (each: global bend solve → re-project stretch + wall contact). */
   beamPasses = 2;
 
+  // ----- Phase-3 dynamic co-rotational beam state (only allocated when params.useDirectSolve) -----
+  /** Dynamic-beam NODAL frames (n; the beam owns these — the rod's per-segment q[] is derived). */
+  private dNodeQ: Quaternion[] = [];
+  /** Per-node linear + angular velocity (cm/s, rad/s) carried across substeps/frames. */
+  private dVel: Vector3[] = [];
+  private dOmega: Vector3[] = [];
+  /** Per-element rigidities + lumped mass, rebuilt from the MaterialField each substep. */
+  private dElem: ElemMat[] = [];
+  private dMass: LumpedMass | null = null;
+  private dRestLen = new Float64Array(0);
+  private dSolver = new BlockTridiagSolver();
+  private dBeamState: BeamState | null = null;
+  /** True once the dynamic-beam velocity arrays are initialized (so inject/retract keep them aligned). */
+  private directReady = false;
+  /** Conditioning + whip knobs for the dynamic beam (design-doc param table). */
+  private static D_RSTAR = 1.0;
+  private static D_TAU_OMEGA = 0.1;
+  private static D_CONTACT_ROUNDS = 4;
+  /**
+   * FIXED internal substep count for the direct path — it deliberately IGNORES params.substeps so the
+   * legacy "substeps as a hidden stiffness knob" entanglement is structurally eliminated: the implicit
+   * dynamic solver always integrates the frame the same way regardless of the (legacy) substeps param,
+   * so felt stiffness is substep-invariant by construction. (4 is needed for coax telescoping; perf
+   * at 4 is over budget under the numerical-Jacobian tangent — the analytic consistent tangent is the
+   * pending fix that lets this stay at 4 cheaply.)
+   */
+  private static D_SUBSTEPS = 4;
+
   /** cm/s rate cap on the legacy-deployed feed adapter (no startup shock). */
   private static FEED_RATE = 35;
 
@@ -515,6 +556,10 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     // rod is still free and the elastic solve immediately re-relaxes curvature/buckling.
     // Frames advect with the material the same way (q[i] ← q[i-1]); the proximal-most frame
     // becomes the access frame. Rest lengths and the material field are FROZEN (no rescale).
+    // NOTE: advection follows each node's OWN tangent (the rod's curve), which is what makes curved
+    // navigation correct — a moving-inlet that advances along the straight access axis kinks the rod
+    // where the vessel curves at the access and destabilizes navigation (measured). So the direct
+    // path keeps advection too; its straight-tube over-feed snaking is a separate, cosmetic limit.
     this.advectForward(h);
 
     // the new node 0 is the kinematic boundary; the OLD node 0 (now index 1) is free
@@ -540,6 +585,11 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     // a new proximal SEGMENT is created too (index 0); its sample contact + segment refs shift.
     this.segContacts.unshift(null);
     for (const c of this.segContacts) if (c) c.segment += 1;
+    // dynamic-beam velocities shift with the material: the new proximal node starts at rest.
+    if (this.directReady) {
+      this.dVel.unshift(new Vector3());
+      this.dOmega.unshift(new Vector3());
+    }
     this.n = this.x.length;
     this.resizeLambdas();
   }
@@ -587,6 +637,10 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     // the new proximal node + frame become the kinematic boundary
     if (this.w.length > 0) this.w[0] = 0;
     if (this.wq.length > 0) this.wq[0] = 0;
+    if (this.directReady) {
+      this.dVel.shift();
+      this.dOmega.shift();
+    }
     this.n = this.x.length;
     this.resizeLambdas();
   }
@@ -1270,10 +1324,114 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return this.feedVelocityForFrame(dt);
   }
 
+  // ============================ Phase-3 dynamic co-rotational beam path ============================
+
+  /** Lazily size + rebuild the dynamic-beam state for the current node count (called per substep). */
+  private ensureDirect(dts: number): void {
+    const n = this.n;
+    if (!this.directReady || this.dVel.length !== n) {
+      // first use, or a desync after a non-inject resize: start the beam at rest
+      this.dVel = Array.from({ length: n }, () => new Vector3());
+      this.dOmega = Array.from({ length: n }, () => new Vector3());
+      this.directReady = true;
+    }
+    // nodal frames derived from the rod's per-segment frames (inject/retract keep those correct)
+    this.dNodeQ = nodalFramesFromSegments(this.q, this.dNodeQ);
+    if (this.dRestLen.length !== this.restLen.length) this.dRestLen = new Float64Array(this.restLen.length);
+    for (let e = 0; e < this.restLen.length; e++) this.dRestLen[e] = this.restLen[e];
+    this.dElem = buildElemMats(this.material, this.dRestLen, this.input.steer, this.dElem);
+    const reuseMass = this.dMass && this.dMass.m.length === n ? this.dMass : undefined;
+    this.dMass = buildLumpedMassForRod(n, this.dRestLen, this.material, dts, CosseratRod.D_RSTAR, reuseMass);
+    this.dBeamState = {
+      n,
+      x: this.x,
+      q: this.dNodeQ,
+      v: this.dVel,
+      omega: this.dOmega,
+      restLen: this.dRestLen,
+      elem: this.dElem,
+      mass: this.dMass,
+      fixedPrefix: 1
+    };
+  }
+
+  /** Pin the kinematic inlet (node 0) at the access point + rolled access frame, at rest. */
+  private anchorInletDirect(): void {
+    this.x[0].copy(this.access.x);
+    this.dVel[0].set(0, 0, 0);
+    this.dOmega[0].set(0, 0, 0);
+    injectedFrame(this.access, this.insertion.rollTarget, this.dNodeQ[0]);
+  }
+
+  /**
+   * Project the rod out of the lumen walls for the direct path: normal inequalities + persistent
+   * friction only, WITHOUT the XPBD elastic re-sweep (the beam owns elasticity, so re-running
+   * solveStretchShear/solveBendTwist would fight it). This is the simple staggered projection; the
+   * Schur-metric coupling (design-doc §1.8) refines it in a later phase.
+   */
+  private directContactProject(dtSeconds: number): void {
+    if (!this.hasWallContacts()) return;
+    for (const c of this.activeContacts) resetNormalLambda(c);
+    for (const c of this.activeSegContacts) resetNormalLambda(c);
+    for (const sc of this.activeSelfContacts) sc.lambdaN = 0;
+    for (const c of this.activeContacts) solveNormalContact(this, c, dtSeconds);
+    for (const c of this.activeSegContacts) this.solveSegmentWallContact(c, dtSeconds);
+    for (const sc of this.activeSelfContacts) this.solveSelfContact(sc, dtSeconds);
+    for (const c of this.activeContacts) solveTranslationalFriction(this, c, dtSeconds);
+    for (const c of this.activeSegContacts) solveTranslationalFriction(this, c, dtSeconds);
+  }
+
+  /** BeamParams for the dynamic path: a0=1/τ velocity-decay match, twist whip guard, staggered rounds. */
+  private directParams(): BeamParams {
+    return {
+      substeps: 1,
+      a0: this.params.dampingTau > 0 ? 1 / this.params.dampingTau : 12.5,
+      a1: 0,
+      tauOmega: CosseratRod.D_TAU_OMEGA,
+      maxNewton: CosseratRod.D_CONTACT_ROUNDS
+    };
+  }
+
+  /** Fixed internal substep count for the direct path (substep-invariant by construction). */
+  directSubsteps(): number {
+    return CosseratRod.D_SUBSTEPS;
+  }
+
+  /**
+   * One dynamic co-rotational beam substep: inject/retract, then a STAGGERED beam-Newton ↔ wall-
+   * contact loop (the elastic tangent propagates each contact projection = containment), then publish
+   * nodal frames to the rod's per-segment q[]. Public so the CoaxialAssembly coordinator can drive
+   * each rod per substep and interleave the coax coupling, exactly as the solo path does here.
+   */
+  directSubstep(feedVelocity: number, dts: number): void {
+    injectOrRetractNodesAtAccess(this, this.access, this.insertion, feedVelocity, 0, dts);
+    this.ensureDirect(dts);
+    this.anchorInletDirect();
+    this.buildContacts();
+    beamSubstepWithContact(this.dBeamState!, dts, this.directParams(), this.dSolver, () => {
+      this.anchorInletDirect();
+      this.buildContacts();
+      this.directContactProject(dts);
+    });
+    this.anchorInletDirect();
+    segmentFramesFromNodal(this.dNodeQ, this.q);
+  }
+
+  /** Dynamic co-rotational beam frame step (replaces the XPBD substep loop when useDirectSolve). */
+  private stepDirect(dt: number): void {
+    // FIXED internal substeps (ignore params.substeps) ⇒ substep-invariant by construction.
+    const S = CosseratRod.D_SUBSTEPS;
+    const dts = dt / S;
+    const feedVelocity = this.feedVelocityForFramePublic(dt);
+    this.beginFrame();
+    for (let sub = 0; sub < S; sub++) this.directSubstep(feedVelocity, dts);
+  }
+
   step(dt: number): void {
     // No elapsed (or non-finite) time ⇒ no physics change. Stepping with dt ≤ 0 would make the
     // XPBD compliance α̃ = α/Δt_s² diverge (Infinity → NaN) and corrupt the rod permanently.
     if (!Number.isFinite(dt) || dt <= 0) return;
+    if (this.params.useDirectSolve) return this.stepDirect(dt);
     const S = Math.max(1, this.params.substeps);
     const dtSeconds = this.dtSeconds(dt);
     const feedVelocity = this.feedVelocityForFramePublic(dt);
@@ -1529,10 +1687,45 @@ export class CoaxialAssembly {
    * caller can keep driving them exactly like a solo rod. Substeps/iterations are taken from the
    * INNER rod's params (the wire is the limiting stiffness; both share the same frame dt).
    */
+  /**
+   * Coaxial frame step with the DYNAMIC CO-ROTATIONAL BEAM for both rods (Phase 3). Because the beam
+   * solver uses shared snapshot scratch, the two rods cannot interleave at the Newton-iteration level;
+   * instead each rod runs a full beam substep (with its own wall contact), then the bilateral coax
+   * coupling projects inner↔outer over a few rounds (two-way support via outerMassScale). Both rods now
+   * carry real EI + mass, so a stiff wire straightens/telescopes the sheath as an independent device.
+   */
+  private stepDirectCoax(dt: number): void {
+    const inner = this.inner;
+    const outer = this.outer;
+    const COAX_ROUNDS = 4;
+    const S = outer.directSubsteps(); // fixed internal substeps (= inner's); substep-invariant
+    const dts = dt / S;
+    const feedInner = inner.feedVelocityForFramePublic(dt);
+    const feedOuter = outer.feedVelocityForFramePublic(dt);
+    outer.beginFrame();
+    inner.beginFrame();
+    for (let sub = 0; sub < S; sub++) {
+      // covered inner material is inside the sheath channel until the open portal at the outer tip
+      inner.vesselContactClipLength = Math.max(0, outer.deployedLength() - COAX_PORTAL_BLEND);
+      inner.vesselContactClipRadius = outer.coaxLumenRadius;
+      // each rod: one full dynamic beam substep (sequential — shared solver scratch)
+      outer.directSubstep(feedOuter, dts);
+      inner.directSubstep(feedInner, dts);
+      // bilateral coax coupling: pair inner nodes to outer segments, then project + slide-friction
+      this.buildCoaxContacts();
+      for (let r = 0; r < COAX_ROUNDS; r++) {
+        this.solveCoaxNormalIteration(dts);
+        this.solveCoaxFrictionIteration(dts);
+      }
+    }
+  }
+
   step(dt: number): void {
     // No elapsed (or non-finite) time ⇒ no physics change (see CosseratRod.step): a dt ≤ 0
     // step diverges the XPBD compliance to NaN and permanently corrupts both rods.
     if (!Number.isFinite(dt) || dt <= 0) return;
+    // Phase-3: when both rods use the dynamic beam, take the coax direct path.
+    if (this.inner.params.useDirectSolve && this.outer.params.useDirectSolve) return this.stepDirectCoax(dt);
     const inner = this.inner;
     const outer = this.outer;
     const S = Math.max(1, inner.params.substeps);

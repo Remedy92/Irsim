@@ -25,7 +25,8 @@ function roundMat(EI: number, opts?: { GJ?: number; EA?: number }): ElemMat {
     GJ: opts?.GJ ?? 0.77 * EI,
     GAsy: 0,
     GAsz: 0,
-    kirchhoff: true
+    kirchhoff: true,
+    kappa0: { x: 0, y: 0, z: 0 }
   };
 }
 
