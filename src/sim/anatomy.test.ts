@@ -1,0 +1,145 @@
+import { describe, expect, it } from "vitest";
+import { Vector3 } from "three";
+import { buildNormalAnatomy } from "./anatomy";
+import { Lumen } from "./lumen";
+import type { VesselBranch } from "./types";
+
+/**
+ * Anatomy structural + ostium-WELD regression tests.
+ *
+ * The highest-risk part of growing the anatomy is connectivity: a child branch is only navigable if
+ * its ostium coincides (within the lumen's exact-coincidence tolerance, 1e-3 cm) with a sample on its
+ * parent, so the lumen graph registers the junction. A silently-unwelded ostium would let a wire reach
+ * a branch only by the global-nearest fallback (the "snap across the carina" failure the lumen design
+ * exists to prevent). These tests assert every new visceral ostium is graph-connected to its parent.
+ */
+
+const VISCERAL_IDS = [
+  "celiac",
+  "hepatic_common",
+  "hepatic_proper",
+  "hepatic_r",
+  "hepatic_l",
+  "gda",
+  "splenic",
+  "gastric_l",
+  "sma",
+  "ileocolic",
+  "colic_m",
+  "ima",
+  "colic_l",
+  "rectal_sup"
+];
+
+/** child branch id -> the parent branch its ostium must weld onto. */
+const PARENT_OF: Record<string, string> = {
+  celiac: "aorta",
+  hepatic_common: "celiac",
+  hepatic_proper: "hepatic_common",
+  hepatic_r: "hepatic_proper",
+  hepatic_l: "hepatic_proper",
+  gda: "hepatic_common",
+  splenic: "celiac",
+  gastric_l: "celiac",
+  sma: "aorta",
+  ileocolic: "sma",
+  colic_m: "sma",
+  ima: "aorta",
+  colic_l: "ima",
+  rectal_sup: "ima"
+};
+
+describe("buildNormalAnatomy — structure", () => {
+  const anatomy = buildNormalAnatomy();
+  const byId = new Map(anatomy.branches.map((b) => [b.id, b]));
+
+  it("ships the aortoiliac/arch core plus the full visceral tree", () => {
+    for (const id of [
+      "aorta",
+      "iliac_r",
+      "iliac_l",
+      "renal_l",
+      "renal_r",
+      "innominate",
+      "carotid_l",
+      "subclavian_l",
+      ...VISCERAL_IDS
+    ]) {
+      expect(byId.has(id), `missing branch ${id}`).toBe(true);
+    }
+    expect(anatomy.branches.length).toBe(22);
+  });
+
+  it("every centerline point is finite, radius-positive, and arc-length monotonic", () => {
+    for (const br of anatomy.branches) {
+      let prevS = -Infinity;
+      for (const p of br.points) {
+        expect(Number.isFinite(p.pos.x) && Number.isFinite(p.pos.y) && Number.isFinite(p.pos.z)).toBe(true);
+        expect(p.radius).toBeGreaterThan(0);
+        expect(p.s).toBeGreaterThanOrEqual(prevS); // non-decreasing arc length
+        prevS = p.s;
+      }
+    }
+  });
+
+  it("keeps the renal ostia exactly on the aorta renal-level node (targets unchanged)", () => {
+    const renalOstium = new Vector3(-0.2, 13.5, 0.6);
+    for (const id of ["renal_l", "renal_r"]) {
+      expect(byId.get(id)!.points[0].pos.distanceTo(renalOstium)).toBeLessThan(1e-9);
+    }
+  });
+
+  it("right renal is longer than the left (real asymmetry), both calibrated caudal", () => {
+    const arc = (b: VesselBranch) => b.points[b.points.length - 1].s;
+    expect(arc(byId.get("renal_r")!)).toBeGreaterThan(arc(byId.get("renal_l")!));
+    // each renal descends (caudal takeoff): hilum sits below the ostium.
+    for (const id of ["renal_l", "renal_r"]) {
+      const b = byId.get(id)!;
+      expect(b.points[b.points.length - 1].pos.y).toBeLessThan(b.points[0].pos.y);
+    }
+  });
+
+  it("exposes selective visceral cannulation targets that reference real branches", () => {
+    const ids = new Set(anatomy.targets.map((t) => t.id));
+    for (const t of ["t_celiac", "t_sma", "t_ima", "t_hepatic", "t_splenic", "t_hepatic_r"]) {
+      expect(ids.has(t), `missing target ${t}`).toBe(true);
+    }
+    for (const t of anatomy.targets) {
+      expect(byId.has(t.viaBranchId), `target ${t.id} via unknown branch ${t.viaBranchId}`).toBe(true);
+    }
+  });
+});
+
+describe("buildNormalAnatomy — ostium welds register in the lumen graph", () => {
+  const anatomy = buildNormalAnatomy();
+  const lumen = new Lumen(anatomy);
+
+  /** The first lumen edge of a branch starts at its ostium (points[0]). */
+  const ostiumEdgeIndex = (branchId: string) =>
+    lumen.edges.findIndex((e) => e.branchId === branchId);
+
+  it("connects every visceral ostium to a parent edge (no orphan branches)", () => {
+    for (const [child, parent] of Object.entries(PARENT_OF)) {
+      const idx = ostiumEdgeIndex(child);
+      expect(idx, `no edge for ${child}`).toBeGreaterThanOrEqual(0);
+      const ostium = lumen.edges[idx];
+      const touchesParent = ostium.adjacent.some((j) => lumen.edges[j].branchId === parent);
+      expect(touchesParent, `${child} ostium not welded to ${parent}`).toBe(true);
+    }
+  });
+
+  it("forms a true celiac trifurcation node (hepatic + splenic + left gastric share the carina)", () => {
+    // Each celiac daughter's ostium edge must be adjacent to at least one other celiac daughter,
+    // i.e. they all meet at the same junction point rather than dangling off different samples.
+    const daughters = ["hepatic_common", "splenic", "gastric_l"];
+    for (const d of daughters) {
+      const idx = lumen.edges.findIndex((e) => e.branchId === d);
+      const ostium = lumen.edges[idx];
+      const meetsSibling = ostium.adjacent.some((j) => {
+        const id = lumen.edges[j].branchId;
+        return daughters.includes(id) && id !== d;
+      });
+      expect(meetsSibling, `${d} does not share the celiac trifurcation node`).toBe(true);
+    }
+  });
+});

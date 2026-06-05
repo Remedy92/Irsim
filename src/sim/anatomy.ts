@@ -50,6 +50,47 @@ function buildBranch(
   return { id, name, attenuation, points };
 }
 
+/**
+ * Nearest existing centerline point on `parent` to `approx` (cloned). Used to WELD a child branch's
+ * ostium exactly onto a parent sample so the lumen graph-adjacency (exact-coincidence, tol 1e-3 in
+ * lumen.ts) connects them. This is the hand-authored version of the ostium-weld the data-driven
+ * loader will need for synthetic/segmented sub-trees (docs/anatomy-realism-roadmap.md §7).
+ */
+function nearestPointOn(parent: VesselBranch, approx: Vector3): Vector3 {
+  let best = parent.points[0].pos;
+  let bestD = Infinity;
+  for (const cp of parent.points) {
+    const d = cp.pos.distanceToSquared(approx);
+    if (d < bestD) {
+      bestD = d;
+      best = cp.pos;
+    }
+  }
+  return best.clone();
+}
+
+/**
+ * Build a child branch whose ostium is welded onto `parent` at the sample nearest `approxOstium`.
+ * `ostiumR` is the lumen radius at the ostium; `rest` are the downstream control points (absolute cm).
+ * Because buildBranch's Catmull-Rom passes exactly through its first control point, the child's first
+ * sampled point coincides with a parent sample to floating-point precision, so the ostium registers
+ * in the lumen graph (and a wire can only cross there, gated by branch-transition + hysteresis).
+ */
+function weldedBranch(
+  parent: VesselBranch,
+  approxOstium: [number, number, number],
+  id: string,
+  name: string,
+  attenuation: number,
+  ostiumR: number,
+  rest: Ctrl[],
+  samples = 28
+): VesselBranch {
+  const o = nearestPointOn(parent, new Vector3(...approxOstium));
+  const ctrls: Ctrl[] = [{ p: [o.x, o.y, o.z], r: ostiumR }, ...rest];
+  return buildBranch(id, name, attenuation, ctrls, samples);
+}
+
 export function buildNormalAnatomy(): Anatomy {
   // --- Aorta: femoral-access bifurcation (y=0) up through abdominal + thoracic to the arch. ---
   const aorta = buildBranch("aorta", "Aorta", 1.0, [
@@ -79,15 +120,21 @@ export function buildNormalAnatomy(): Anatomy {
   ]);
 
   // --- Renal arteries (off the aorta at the renal level). ---
+  // Calibrated to a more realistic posterolateral + CAUDAL takeoff (population-mean coronal angle
+  // ~54°; the kidneys are retroperitoneal/posterior) and the real left/right ASYMMETRY: the right
+  // renal is longer and runs more caudally as it crosses behind the IVC to a lower-sitting right
+  // kidney. The ostium is kept exactly on the aorta renal-level control point, so the lumen weld and
+  // the renal targets are unchanged. See docs/anatomy-realism-roadmap.md §4 (geometry calibration).
   const leftRenal = buildBranch("renal_l", "Left renal artery", 0.7, [
-    { p: [-0.2, 13.5, 0.6], r: 0.3 },
-    { p: [2.0, 13.8, 0.2], r: 0.28 },
-    { p: [4.2, 13.4, -0.4], r: 0.26 }
+    { p: [-0.2, 13.5, 0.6], r: 0.3 }, // ostium (on aorta) — unchanged
+    { p: [2.2, 13.0, 0.0], r: 0.27 },
+    { p: [4.0, 12.3, -0.6], r: 0.25 } // L renal hilum (~3.4 cm, shorter)
   ]);
   const rightRenal = buildBranch("renal_r", "Right renal artery", 0.7, [
-    { p: [-0.2, 13.5, 0.6], r: 0.3 },
-    { p: [-2.2, 13.2, 0.2], r: 0.28 },
-    { p: [-4.4, 12.9, -0.4], r: 0.26 }
+    { p: [-0.2, 13.5, 0.6], r: 0.3 }, // ostium (on aorta) — unchanged
+    { p: [-2.4, 12.8, 0.0], r: 0.27 },
+    { p: [-4.6, 12.0, -0.5], r: 0.25 },
+    { p: [-6.2, 11.4, -0.9], r: 0.24 } // R renal hilum (~4.6 cm, longer + more caudal)
   ]);
 
   // --- Arch great vessels. ---
@@ -107,6 +154,83 @@ export function buildNormalAnatomy(): Anatomy {
     { p: [5.4, 36.2, -2.0], r: 0.31 }
   ]);
 
+  // --- Visceral / mesenteric tree (off the abdominal aorta). ---
+  // The highest-yield IR cannulation-training territory: selective celiac → hepatic/splenic (TACE/
+  // embolization navigation), SMA and IMA (GI-bleed). Each ostium is welded onto the nearest aorta
+  // (or parent) sample so the lumen graph connects it; the celiac trifurcation and the hepatic/SMA/
+  // IMA sub-branches form true junction nodes. Diameters/lengths follow published abdominal-aortic-
+  // branch morphometry — an anatomically-plausible placeholder, not a segmented case. See
+  // docs/anatomy-realism-roadmap.md §3b. Variants (replaced/accessory hepatics, etc.) come later.
+
+  // Celiac trunk (T12–L1): short anterior trunk that trifurcates.
+  const celiac = weldedBranch(aorta, [-0.05, 18.4, 0.3], "celiac", "Celiac trunk", 0.7, 0.4, [
+    { p: [0.0, 18.5, 1.2], r: 0.38 },
+    { p: [0.0, 18.5, 2.2], r: 0.36 } // trifurcation node
+  ], 28);
+  // Common hepatic → (proper hepatic → R/L hepatic) + gastroduodenal.
+  const commonHepatic = weldedBranch(celiac, [0.0, 18.5, 2.2], "hepatic_common", "Common hepatic artery", 0.62, 0.28, [
+    { p: [-1.4, 18.7, 3.0], r: 0.27 },
+    { p: [-2.6, 18.9, 3.5], r: 0.26 } // hepatic bifurcation (PHA + GDA)
+  ], 24);
+  const properHepatic = weldedBranch(commonHepatic, [-2.6, 18.9, 3.5], "hepatic_proper", "Proper hepatic artery", 0.58, 0.25, [
+    { p: [-3.4, 19.8, 3.9], r: 0.24 },
+    { p: [-4.0, 20.6, 4.1], r: 0.22 } // R/L hepatic bifurcation
+  ], 22);
+  const rightHepatic = weldedBranch(properHepatic, [-4.0, 20.6, 4.1], "hepatic_r", "Right hepatic artery", 0.5, 0.16, [
+    { p: [-5.2, 21.3, 3.9], r: 0.15 },
+    { p: [-6.0, 22.3, 3.7], r: 0.14 }
+  ], 22);
+  const leftHepatic = weldedBranch(properHepatic, [-4.0, 20.6, 4.1], "hepatic_l", "Left hepatic artery", 0.5, 0.14, [
+    { p: [-3.4, 21.5, 4.3], r: 0.13 },
+    { p: [-2.8, 22.7, 4.4], r: 0.12 }
+  ], 22);
+  const gastroduodenal = weldedBranch(commonHepatic, [-2.6, 18.9, 3.5], "gda", "Gastroduodenal artery", 0.55, 0.2, [
+    { p: [-2.4, 17.4, 3.6], r: 0.19 },
+    { p: [-2.2, 15.9, 3.5], r: 0.18 }
+  ], 22);
+  // Splenic: long, characteristically TORTUOUS course to the splenic hilum (patient-left).
+  const splenic = weldedBranch(celiac, [0.0, 18.5, 2.2], "splenic", "Splenic artery", 0.65, 0.3, [
+    { p: [1.6, 18.9, 2.5], r: 0.3 },
+    { p: [3.0, 18.3, 1.8], r: 0.29 },
+    { p: [4.4, 18.9, 2.3], r: 0.28 },
+    { p: [5.8, 18.4, 1.5], r: 0.27 },
+    { p: [7.0, 19.0, 1.9], r: 0.26 } // splenic hilum
+  ], 40);
+  const leftGastric = weldedBranch(celiac, [0.0, 18.5, 2.2], "gastric_l", "Left gastric artery", 0.5, 0.2, [
+    { p: [0.6, 19.6, 2.3], r: 0.18 },
+    { p: [1.0, 20.9, 2.1], r: 0.16 }
+  ], 22);
+
+  // Superior mesenteric artery (L1): anterior, then a long caudal course in the mesentery.
+  const sma = weldedBranch(aorta, [-0.12, 16.4, 0.42], "sma", "Superior mesenteric artery", 0.7, 0.29, [
+    { p: [-0.1, 16.1, 1.6], r: 0.28 },
+    { p: [-0.05, 14.8, 2.2], r: 0.27 },
+    { p: [0.0, 12.5, 2.6], r: 0.25 },
+    { p: [0.1, 10.2, 2.7], r: 0.23 }
+  ], 40);
+  const ileocolic = weldedBranch(sma, [0.0, 12.5, 2.6], "ileocolic", "Ileocolic artery", 0.5, 0.17, [
+    { p: [-1.3, 11.6, 2.4], r: 0.16 },
+    { p: [-2.5, 10.9, 2.0], r: 0.14 }
+  ], 22);
+  const middleColic = weldedBranch(sma, [-0.05, 14.8, 2.2], "colic_m", "Middle colic artery", 0.48, 0.15, [
+    { p: [-0.2, 15.0, 3.3], r: 0.14 },
+    { p: [-0.3, 14.9, 4.3], r: 0.12 }
+  ], 22);
+
+  // Inferior mesenteric artery (L3): caudal-left course to the left colon + superior rectal.
+  const ima = weldedBranch(aorta, [-0.08, 10.8, 0.72], "ima", "Inferior mesenteric artery", 0.62, 0.2, [
+    { p: [0.5, 9.8, 1.4], r: 0.19 },
+    { p: [0.95, 8.6, 1.6], r: 0.18 }
+  ], 28);
+  const leftColic = weldedBranch(ima, [0.5, 9.8, 1.4], "colic_l", "Left colic artery", 0.48, 0.14, [
+    { p: [1.6, 10.6, 1.5], r: 0.13 },
+    { p: [2.4, 11.4, 1.4], r: 0.12 }
+  ], 22);
+  const superiorRectal = weldedBranch(ima, [0.95, 8.6, 1.6], "rectal_sup", "Superior rectal artery", 0.48, 0.14, [
+    { p: [1.0, 6.6, 1.3], r: 0.13 },
+    { p: [1.0, 4.8, 1.0], r: 0.12 }
+  ], 22);
+
   const branches = [
     aorta,
     rightIliac,
@@ -115,7 +239,22 @@ export function buildNormalAnatomy(): Anatomy {
     rightRenal,
     innominate,
     leftCarotid,
-    leftSubclavian
+    leftSubclavian,
+    // visceral / mesenteric tree
+    celiac,
+    commonHepatic,
+    properHepatic,
+    rightHepatic,
+    leftHepatic,
+    gastroduodenal,
+    splenic,
+    leftGastric,
+    sma,
+    ileocolic,
+    middleColic,
+    ima,
+    leftColic,
+    superiorRectal
   ];
 
   const ostium = (b: VesselBranch) => b.points[0].pos.clone();
@@ -146,12 +285,19 @@ export function buildNormalAnatomy(): Anatomy {
       { id: "t_renal_l", name: "Left renal ostium", pos: ostium(leftRenal), acceptance: 0.6, viaBranchId: "renal_l" },
       { id: "t_renal_r", name: "Right renal ostium", pos: ostium(rightRenal), acceptance: 0.6, viaBranchId: "renal_r" },
       { id: "t_carotid_l", name: "Left common carotid ostium", pos: ostium(leftCarotid), acceptance: 0.6, viaBranchId: "carotid_l" },
-      { id: "t_innominate", name: "Brachiocephalic ostium", pos: ostium(innominate), acceptance: 0.7, viaBranchId: "innominate" }
+      { id: "t_innominate", name: "Brachiocephalic ostium", pos: ostium(innominate), acceptance: 0.7, viaBranchId: "innominate" },
+      // Visceral cannulation targets (selective abdominal-branch engagement).
+      { id: "t_celiac", name: "Celiac trunk ostium", pos: ostium(celiac), acceptance: 0.6, viaBranchId: "celiac" },
+      { id: "t_sma", name: "Superior mesenteric ostium", pos: ostium(sma), acceptance: 0.6, viaBranchId: "sma" },
+      { id: "t_ima", name: "Inferior mesenteric ostium", pos: ostium(ima), acceptance: 0.55, viaBranchId: "ima" },
+      { id: "t_hepatic", name: "Common hepatic artery", pos: ostium(commonHepatic), acceptance: 0.5, viaBranchId: "hepatic_common" },
+      { id: "t_splenic", name: "Splenic artery", pos: ostium(splenic), acceptance: 0.5, viaBranchId: "splenic" },
+      { id: "t_hepatic_r", name: "Right hepatic (selective)", pos: ostium(rightHepatic), acceptance: 0.45, viaBranchId: "hepatic_r" }
     ],
     provenance: {
       source: "Procedural (IRsim parametric generator)",
       license: "CC0 / generated",
-      note: "Anatomically-plausible placeholder. Replace with VMTK-derived centerlines from a license-clean CTA before any clinical-credibility claim."
+      note: "Anatomically-plausible placeholder (aortoiliac + arch great vessels + recalibrated renals + visceral/mesenteric tree: celiac→hepatic/splenic/GDA/left-gastric, SMA, IMA). Diameters/lengths follow published abdominal-branch morphometry but this is NOT a segmented case. Replace with VMTK-derived centerlines from a license-clean CTA (or a license-clean synthetic tree) before any clinical-credibility claim. See docs/anatomy-realism-roadmap.md."
     }
   };
 }
