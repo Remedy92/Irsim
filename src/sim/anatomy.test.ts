@@ -33,6 +33,19 @@ const VISCERAL_IDS = [
 
 /** child branch id -> the parent branch its ostium must weld onto. */
 const PARENT_OF: Record<string, string> = {
+  // arch great vessels (now welded onto the arch; v0 left carotid/subclavian dangling)
+  innominate: "aorta",
+  carotid_l: "aorta",
+  subclavian_l: "aorta",
+  // renals
+  renal_l: "aorta",
+  renal_r: "aorta",
+  // pelvic path (UFE)
+  iliac_internal_r: "iliac_r",
+  iliac_internal_l: "iliac_l",
+  uterine_r: "iliac_internal_r",
+  uterine_l: "iliac_internal_l",
+  // visceral / mesenteric tree
   celiac: "aorta",
   hepatic_common: "celiac",
   hepatic_proper: "hepatic_common",
@@ -53,7 +66,7 @@ describe("buildNormalAnatomy — structure", () => {
   const anatomy = buildNormalAnatomy();
   const byId = new Map(anatomy.branches.map((b) => [b.id, b]));
 
-  it("ships the aortoiliac/arch core plus the full visceral tree", () => {
+  it("ships the aortoiliac/arch core plus the visceral tree and the pelvic path", () => {
     for (const id of [
       "aorta",
       "iliac_r",
@@ -63,11 +76,16 @@ describe("buildNormalAnatomy — structure", () => {
       "innominate",
       "carotid_l",
       "subclavian_l",
+      // pelvic path (UFE)
+      "iliac_internal_r",
+      "iliac_internal_l",
+      "uterine_r",
+      "uterine_l",
       ...VISCERAL_IDS
     ]) {
       expect(byId.has(id), `missing branch ${id}`).toBe(true);
     }
-    expect(anatomy.branches.length).toBe(22);
+    expect(anatomy.branches.length).toBe(26);
   });
 
   it("every centerline point is finite, radius-positive, and arc-length monotonic", () => {
@@ -101,7 +119,18 @@ describe("buildNormalAnatomy — structure", () => {
 
   it("exposes selective visceral cannulation targets that reference real branches", () => {
     const ids = new Set(anatomy.targets.map((t) => t.id));
-    for (const t of ["t_celiac", "t_sma", "t_ima", "t_hepatic", "t_splenic", "t_hepatic_r"]) {
+    for (const t of [
+      "t_celiac",
+      "t_sma",
+      "t_ima",
+      "t_hepatic",
+      "t_splenic",
+      "t_hepatic_r",
+      "t_uterine_r",
+      "t_uterine_l",
+      "t_iia_r",
+      "t_iia_l"
+    ]) {
       expect(ids.has(t), `missing target ${t}`).toBe(true);
     }
     for (const t of anatomy.targets) {
