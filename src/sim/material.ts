@@ -90,11 +90,11 @@ export function makeProfile(opts: {
  * The grading is the whole point: α_b(tip) ≫ α_b(transition) ≫ α_b(shaft).
  */
 export const REGION = {
-  /** 0.035" guidewire floppy distal tip — very low EI ⇒ very high bend compliance. */
+  /** 0.035" guidewire floppy distal tip — measured tips are roughly 0.05-0.15 N*cm^2. */
   wireFloppyTip: {
     rodRadius: 0.05,
-    eiCm: eiSiToCm(2.5e-5), // ≈ 0.25 N·cm²
-    gjCm: eiSiToCm(1.5e-5),
+    eiCm: eiSiToCm(1.0e-5), // ≈ 0.1 N*cm^2
+    gjCm: eiSiToCm(7.5e-6),
     eaN: 1.0e4,
     muStatic: 0.08,
     muKinetic: 0.04,
@@ -104,8 +104,8 @@ export const REGION = {
   /** Transition region between tip and shaft. */
   wireTransition: {
     rodRadius: 0.05,
-    eiCm: eiSiToCm(2.0e-4), // ≈ 2.0 N·cm²
-    gjCm: eiSiToCm(1.5e-4),
+    eiCm: eiSiToCm(3.0e-4), // ≈ 3.0 N·cm²
+    gjCm: eiSiToCm(2.25e-4),
     eaN: 2.0e4,
     muStatic: 0.08,
     muKinetic: 0.04,

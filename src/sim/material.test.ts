@@ -68,4 +68,23 @@ describe("graded material field", () => {
     expect(longF.perSegment[longF.perSegment.length - 1].restCurvature.x).toBeCloseTo(tipCurvature, 12);
     expect(longF.perSegment[0].restCurvature.x).toBe(0);
   });
+
+  it("keeps the shaped precurve short while the distal tip remains genuinely floppy", () => {
+    const ell = 0.25;
+    const tipCurvature = 0.1;
+    const f = buildGuidewireField(80, ell, { tipSegments: 4, transitionSegments: 4, tipCurvature });
+    const curved = f.perSegment.filter((s) => Math.abs(s.restCurvature.x) > 0).length;
+    const tip = f.perSegment[f.perSegment.length - 1];
+    const transition = f.perSegment[f.perSegment.length - 1 - 5];
+    const shaft = f.perSegment[0];
+
+    expect(curved).toBe(4);
+    expect(tip.restCurvature.x).toBeCloseTo(tipCurvature, 12);
+    expect(f.perSegment[f.perSegment.length - 5].restCurvature.x).toBe(0);
+    // Compliance is inverse EI: a 0.1 N*cm^2 floppy tip vs a 12 N*cm^2 shaft is ~120x softer.
+    expect(tip.alphaBend1 / shaft.alphaBend1).toBeGreaterThan(80);
+    expect(tip.alphaBend1 / shaft.alphaBend1).toBeLessThan(160);
+    expect(transition.alphaBend1 / shaft.alphaBend1).toBeGreaterThan(2);
+    expect(transition.alphaBend1 / shaft.alphaBend1).toBeLessThan(8);
+  });
 });

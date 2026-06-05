@@ -64,10 +64,10 @@ const DEPLOY_MIN = 2;
 const DEPLOY_MAX = 70;
 const clampDeploy = (v: number) => Math.max(DEPLOY_MIN, Math.min(DEPLOY_MAX, v));
 
-/** Fresh device positions for a new run. The soft wire tip leads; the stiffer sheath trails it. */
+/** Fresh device positions for a new run. The shaped wire tip just peeks beyond the sheath. */
 const freshDevices = (): { wire: DeviceState; sheath: DeviceState } => ({
-  wire: { deployed: 8, torque: 0, steer: 0.45 },
-  sheath: { deployed: 5, torque: 0, steer: 0 }
+  wire: { deployed: 8, torque: 0, steer: 0.35 },
+  sheath: { deployed: 6.5, torque: 0, steer: 0 }
 });
 
 const DEFAULTS = {

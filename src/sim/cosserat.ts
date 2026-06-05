@@ -25,6 +25,7 @@ import {
   type NodeContactTarget
 } from "./contact";
 import { Lumen } from "./lumen";
+import { BeamSolver } from "./beam";
 import {
   closestOuterSegment,
   makeCoaxContact,
@@ -129,8 +130,20 @@ export interface CosseratParams {
   substeps: number;
   /** Solver iterations per substep. */
   iterations: number;
-  /** Exponential velocity damping factor applied to the Verlet predict (0..1). */
+  /**
+   * Exponential velocity damping factor applied to the Verlet predict (0..1). LEGACY: this is a
+   * per-substep factor, so the net per-frame damping changed with the substep count (one of the
+   * "substeps as a hidden knob" entanglements). Superseded by `dampingTau` when that is set.
+   */
   damping: number;
+  /**
+   * Velocity-damping TIME CONSTANT τ (seconds). The per-substep retention is exp(−Δt_s/τ), so the
+   * net per-FRAME damping is exp(−Δt/τ) — INDEPENDENT of the substep count S (design review §1.3,
+   * pitfall 7: "use exponential damping with a time constant, not frame-dependent magic numbers").
+   * This is what lets Small-Steps add substeps to improve convergence WITHOUT softening the rod.
+   * A guidewire in blood is heavily damped, so τ is short (tens of ms). 0 ⇒ fall back to `damping`.
+   */
+  dampingTau: number;
   /** Distal nodes forming the pre-shaped, floppy tip. */
   tipNodes: number;
   /** Transition-region segment count between tip and shaft. */
@@ -152,6 +165,14 @@ export interface CosseratParams {
    */
   spinFrictionScale: number;
   /**
+   * Empirical global shaft-fairing gain. 0 = off (pure Gauss-Seidel XPBD bend, the legacy
+   * behaviour). > 0 enables the O(N) banded beam solve (beam.ts), with per-node stiffness scaled by
+   * EI, to remove high-frequency shaft wiggle that the local bend iterations under-converge. This is
+   * a stability/feel improvement, not a calibrated realised-EI substitute for the future direct or
+   * dynamic rod solve. The pre-shaped tip is excluded (quaternion bend owns its precurve).
+   */
+  beamGain: number;
+  /**
    * Coaxial INNER-CHANNEL radius (cm) when this device is the OUTER member of a coaxial pair
    * (sheath/catheter over a wire). An inner instrument is contained inside this radius minus
    * its own radius (design doc §6 R_outer,lumen). Default ≈ rodRadius (thin wall). Unused when
@@ -164,19 +185,23 @@ export const GUIDEWIRE: CosseratParams = {
   segments: 80,
   rodRadius: 0.05,
   referenceLength: 20,
-  // 2 substeps: enough solver passes for clean 1:1 advancement (the Stage-2 goal) while the
-  // quasi-static elastic stiffness (α̃ = α/Δt_s²) stays soft enough for the pre-shaped tip to
-  // express its rest curvature. (S≥4 makes the floppy-tip bend so compliant the precurve
-  // barely shows; S=1 under-advances. See the Stage-2 report for the full trade-off.)
+  // ITERATIONS, not substeps, propagate and express bending along this Gauss-Seidel Cosserat
+  // chain (an empirical finding: dropping to a few iterations kills precurve expression and
+  // shape-holding because GS carries bend information only ~one node per iteration — Deul et al.
+  // 2018). So we keep a healthy iteration count for bend propagation; the substep count is for
+  // dynamics/contact, not stiffness. Time-constant damping (dampingTau) decouples the felt damping
+  // from the substep count so the two knobs no longer fight.
   substeps: 2,
   iterations: 12,
-  damping: 0.9,
-  tipNodes: 8,
-  transitionNodes: 6,
+  damping: 0.9, // legacy fallback (unused while dampingTau > 0)
+  dampingTau: 0.08, // per-frame damping ≈ the old S=2 value (0.9²≈0.81/frame), now S-independent
+  tipNodes: 6,
+  transitionNodes: 12,
   tipCurve: 0.22,
   profile: "guidewire",
   bendComplianceScale: 1,
   spinFrictionScale: 1,
+  beamGain: 0.2,
   coaxLumenRadius: 0.05
 };
 
@@ -188,12 +213,14 @@ export const SHEATH: CosseratParams = {
   substeps: 4,
   iterations: 12,
   damping: 0.9,
+  dampingTau: 0.04, // S=4 ⇒ ≈0.9/substep, matching the original per-frame sheath damping (0.9⁴)
   tipNodes: 0,
   transitionNodes: 0,
   tipCurve: 0,
   profile: "sheath",
   bendComplianceScale: 1,
   spinFrictionScale: 1,
+  beamGain: 0.35,
   // 6 Fr sheath: OD ≈ 0.1 cm radius, inner channel ≈ 0.09 cm. Admits a 0.05 cm wire with ~0.04 cm
   // radial clearance — enough that a straight wire in a straight sheath does not spuriously press
   // the channel wall at the rod's segment resolution, but tight enough to contain a bowing tip.
@@ -346,6 +373,25 @@ export class CosseratRod implements Injectable, NodeContactTarget {
 
   input: RodInput = { deployed: 8, steer: 0.45, torque: 0 };
 
+  /**
+   * Uniform external BODY FORCE per node (cm-units force; applied as acceleration w·F in the
+   * Verlet predict). Zero by default — the live trainer drives the rod by feed + contact only,
+   * not gravity. This is a hook for future physical forcing (gravity / blood-flow / bench-test
+   * loads) once real per-node mass and a calibrated dynamic/direct solve exist. With unit mass it is
+   * only a pure acceleration, so the current quasi-static rod should not use it to claim realised EI.
+   */
+  bodyForce = new Vector3(0, 0, 0);
+
+  /** Global shaft-fairing solver + its per-node stiffness / faired-curvature scratch. */
+  private beam = new BeamSolver();
+  private kBuf: number[] = [];
+  private dCur: Vector3[] = [];
+  private dFair: (Vector3 | null)[] = [];
+  /** Global shaft-fairing gain (instance copy of params.beamGain; tunable per rod). 0 = off. */
+  beamGain = 0;
+  /** Beam passes per substep (each: global bend solve → re-project stretch + wall contact). */
+  beamPasses = 2;
+
   /** cm/s rate cap on the legacy-deployed feed adapter (no startup shock). */
   private static FEED_RATE = 35;
 
@@ -355,8 +401,15 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    * tight lumen, large enough to keep the surface off the wall.
    */
   private static EPS_C = 0.005;
-  /** Normal-contact compliance (cm-units). Small ⇒ a near-rigid wall. */
-  private static ALPHA_N = 1e-9;
+  /**
+   * Normal-contact compliance (cm-units). Small ⇒ a near-rigid wall. INSTANCE field (was a static
+   * 1e-9) so it can be tuned: a near-rigid wall (1e-9) overwhelms the soft bend ~9 orders of
+   * magnitude, so the wire CONFORMS to every contact wiggle regardless of its EI — the real "too
+   * flexible" mechanism (design review §1.1). A modestly COMPLIANT wall (vessels are compliant) lets
+   * the bend compete, so a stiff wire rides the inside of curves / holds a column instead of
+   * tracing every lumen wiggle. Tuned empirically against shape-holding vs containment.
+   */
+  wallAlphaN = 1e-9;
   /** Translational-friction compliance (cm-units). */
   private static ALPHA_T = 1e-8;
   /** Spin-friction compliance (cm-units). */
@@ -375,6 +428,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   constructor(anatomy: Anatomy, accessId: string, params: CosseratParams = GUIDEWIRE) {
     this.params = params;
     this.h = params.referenceLength / params.segments;
+    this.beamGain = params.beamGain;
 
     const site = anatomy.access.find((a) => a.id === accessId) ?? anatomy.access[0];
     this.access = buildAccessFrame(site);
@@ -736,7 +790,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       m.muStatic,
       m.muKinetic,
       m.muRoll * this.params.spinFrictionScale,
-      CosseratRod.ALPHA_N,
+      this.wallAlphaN,
       CosseratRod.ALPHA_T,
       CosseratRod.ALPHA_ROLL
     );
@@ -896,7 +950,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     // each midpoint depends on its two endpoints with weight 1/2 ⇒ gradient-mass = (Σw)/4.
     const wA = 0.25 * (this.w[a0] + this.w[a1]);
     const wB = 0.25 * (this.w[b0] + this.w[b1]);
-    const aTilde = CosseratRod.ALPHA_N / (dtSeconds * dtSeconds);
+    const aTilde = this.wallAlphaN / (dtSeconds * dtSeconds);
     const denom = wA + wB + aTilde;
     if (denom < 1e-12) return;
     let dL = -(Cn + aTilde * sc.lambdaN) / denom;
@@ -998,7 +1052,15 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     //    SWEPT-SAFETY / CFL CLAMP (Stage 4, design doc §7): a node's per-substep position change
     //    is clamped to 0.25·min(R_lumen, h) so a fast feed/relaxation cannot tunnel a node THROUGH
     //    a wall between contact builds (the cheap alternative to true swept collision).
-    const d = this.params.damping;
+    // Time-constant velocity damping: per-substep retention exp(−Δt_s/τ) ⇒ per-FRAME damping
+    // exp(−Δt/τ), independent of the substep count (so Small-Steps does not change the felt
+    // damping). Falls back to the legacy per-substep constant when dampingTau is 0/unset.
+    const d = this.params.dampingTau > 0 ? Math.exp(-dtSeconds / this.params.dampingTau) : this.params.damping;
+    const fdt2 = dtSeconds * dtSeconds; // a·Δt_s² = w·F·Δt_s² added to the Verlet displacement
+    const fx = this.bodyForce.x;
+    const fy = this.bodyForce.y;
+    const fz = this.bodyForce.z;
+    const hasForce = fx !== 0 || fy !== 0 || fz !== 0;
     for (let i = 0; i < this.n; i++) {
       if (this.w[i] === 0) continue;
       const x = this.x[i];
@@ -1006,6 +1068,11 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       let vx = (x.x - p.x) * d;
       let vy = (x.y - p.y) * d;
       let vz = (x.z - p.z) * d;
+      if (hasForce) {
+        vx += this.w[i] * fx * fdt2;
+        vy += this.w[i] * fy * fdt2;
+        vz += this.w[i] * fz * fdt2;
+      }
       const step2 = vx * vx + vy * vy + vz * vz;
       const rLumen = this.localLumenRadius(i);
       const maxStep = 0.25 * Math.min(rLumen, this.h);
@@ -1019,13 +1086,27 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       x.set(x.x + vx, x.y + vy, x.z + vz);
     }
 
-    // 3. reset elastic multipliers (XPBD: elastic λ are bilateral, reset each substep)
+    // 3. reset elastic multipliers (XPBD: elastic λ are bilateral, reset each substep). NOTE: a
+    //    frame-level warm-start was trialled (accumulate λ across substeps to hold a static load),
+    //    but it does NOT cure the "too flexible" creep — that is Gauss-Seidel UNDER-CONVERGENCE of
+    //    the distributed bending mode (bend propagates ~1 node/iteration down the chain; Deul 2018),
+    //    which needs a better solver (Phase 3), not λ warm-starting — and warm-starting destabilised
+    //    the near-concentric coax. So the per-substep reset stands.
     this.resetElasticLambdas();
     this.insertion.lambdaFeed = 0;
 
     // 4. build / refresh persistent frictional wall contacts (geometry + lifecycle only). Friction
     //    multipliers + anchors PERSIST across substeps/frames; only λ_n is reset per iteration.
     this.buildContacts();
+  }
+
+  /**
+   * Per-frame hook for future direct/implicit solvers. Elastic multipliers are still reset per
+   * substep in beginSubstep; this method intentionally does not warm-start the current XPBD pass.
+   */
+  beginFrame(): void {
+    // Per-frame hook (currently a no-op — elastic λ are reset per substep in beginSubstep). Kept as
+    // the place a future direct/implicit solver (Phase 3) would do its once-per-frame setup.
   }
 
   /** One elastic Gauss-Seidel iteration: anchor the inlet, symmetric stretch/bend sweep, anchor. */
@@ -1082,6 +1163,70 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return true;
   }
 
+  /**
+   * EI-scaled global shaft-fairing pass. Runs the O(N) banded beam solve (beam.ts), then re-projects
+   * inextensibility + wall contact so the now-smoother centreline still has correct segment lengths
+   * and stays inside the lumen. This removes high-frequency shaft wiggle that the local bend pass
+   * under-converges; it improves feel, but it is not a calibrated realised-EI solver. No-op when
+   * beamGain <= 0 (legacy pure-XPBD behaviour). The pre-shaped tip is excluded so the quaternion bend
+   * keeps owning the tip steering.
+   */
+  iterateBeam(dtSeconds: number): void {
+    if (this.beamGain <= 0) return;
+    const n = this.n;
+    const segs = this.q.length;
+    if (n < 5 || segs < 2) return;
+    if (this.kBuf.length !== n) this.kBuf.length = n;
+    // Exclude the whole distal TIP+TRANSITION assembly (plus a small margin) from the beam — that is
+    // where the steerable precurve lives and the quaternion bend must own it, so the floppy tip still
+    // flops into ostia. The beam only stiffens the supportive SHAFT, which is precisely the "too
+    // flexible" complaint (a real wire is a stiff shaft + a soft shaped tip).
+    const tipRegion = this.params.tipNodes + this.params.transitionNodes + 8;
+    for (let i = 0; i < n; i++) {
+      const fromTip = n - 1 - i;
+      const s = Math.min(i, segs - 1);
+      const m = this.material.perSegment[s];
+      if (fromTip < tipRegion || m.restCurvature.lengthSq() > 1e-12) {
+        this.kBuf[i] = 0;
+        continue;
+      }
+      // per-node beam stiffness ∝ EI_node. EI = ℓ/(4·α_bend) (inverse of units.ts alphaBend).
+      const EI = this.restLen[s] / (4 * Math.max(1e-12, m.alphaBend1));
+      this.kBuf[i] = this.beamGain * EI;
+    }
+    // CURVATURE FAIRING target: the beam pulls each interior node's second-difference toward the
+    // LOW-PASS (binomial-smoothed) current second-difference, so it removes only HIGH-FREQUENCY
+    // wiggle (the "too flexible" noodle) while preserving the large-scale lumen-following curvature a
+    // contained wire MUST have. (Targeting straight, d0=0, fights the vessel's own curves and makes
+    // it worse — measured.) Compute D_i = x_{i-1} − 2x_i + x_{i+1}, then d0_i = (D_{i−1}+2D_i+D_{i+1})/4.
+    if (this.dCur.length < n) {
+      this.dCur.length = n;
+      this.dFair.length = n;
+    }
+    for (let i = 1; i < n - 1; i++) {
+      let d = this.dCur[i];
+      if (!d) d = this.dCur[i] = new Vector3();
+      d.copy(this.x[i - 1]).addScaledVector(this.x[i], -2).add(this.x[i + 1]);
+    }
+    for (let i = 1; i < n - 1; i++) {
+      let t = this.dFair[i];
+      if (!t) t = this.dFair[i] = new Vector3();
+      const im = this.dCur[i - 1] ?? this.dCur[i];
+      const ip = this.dCur[i + 1] ?? this.dCur[i];
+      t.copy(this.dCur[i]).multiplyScalar(2).add(im).add(ip).multiplyScalar(0.25);
+    }
+    // fixedPrefix = 2: pin the kinematic inlet node AND the first segment direction (a real clamp),
+    // so the global bend cannot rigid-rotate the whole shaft about the access.
+    this.beam.solve(this.x, this.kBuf, 1, 2, this.dFair);
+    // RE-PROJECT after the global smooth: run a full elastic sweep (stretch + bend-twist) so segment
+    // lengths are restored AND the pre-shaped tip RE-EXPRESSES its precurve (the bend-twist is what
+    // points the steerable tip — stretch alone would leave the beam having flattened it), then push
+    // any node the smoothing moved past the wall back inside the lumen. For the shaft the bend-twist
+    // pulls toward straight, which AGREES with the beam's wiggle removal, so the stiffening survives.
+    this.iterateElastic(dtSeconds);
+    this.iterateWallContact(dtSeconds);
+  }
+
   /** Final inlet anchor at the end of a substep (the kinematic boundary settles). */
   finishSubstep(): void {
     this.anchorInlet();
@@ -1106,12 +1251,15 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     const feedVelocity = this.feedVelocityForFramePublic(dt);
     const iters = this.params.iterations;
 
+    this.beginFrame();
     for (let sub = 0; sub < S; sub++) {
       this.beginSubstep(feedVelocity, 0, dtSeconds);
       for (let it = 0; it < iters; it++) {
         this.iterateElastic(dtSeconds);
         this.iterateWallContact(dtSeconds);
       }
+      // EI-scaled global shaft-fairing passes (no-op when beamGain <= 0)
+      for (let bp = 0; bp < this.beamPasses; bp++) this.iterateBeam(dtSeconds);
       this.finishSubstep();
     }
   }
@@ -1163,12 +1311,33 @@ const COAX_PORTAL_BLEND = 0.4;
 /**
  * How much of the bilateral coax-normal correction the OUTER sheath absorbs (its inverse-mass
  * scale in the 3-body distribution). The sheath is the heavier/stiffer SUPPORT, so it takes a
- * small share and the contained inner takes most of the move (design doc §6 mass-weighted
- * distribution, with the sheath as the support). This is NOT an axial tie — it only weights the
- * lateral support — and it keeps a near-concentric pair stable (an equal-mass distribution shoves
- * the advection-driven outer sideways faster than it can recover, crumpling both rods).
+ * SMALLER share than the inner and the contained inner takes most of the move (design doc §6
+ * mass-weighted distribution). This is NOT an axial tie — it only weights the lateral support.
+ *
+ * IT MUST BE > 0 (design review §1.2): at exactly 0 the outer endpoints contribute nothing to the
+ * 3-body distribution, so the sheath receives ZERO reaction from the wire — a Newton's-third-law
+ * violation. A stiff wire then cannot straighten/drag/telescope the sheath, and the wire gets no
+ * BILATERAL lateral support. A small positive share gives the sheath a real (minority) reaction: the
+ * wire is still the one mostly moved (it is the supported member), but the sheath now genuinely feels
+ * the wire. The stability worry the old 0.0 cited (a near-concentric pair shoving the advection-driven
+ * outer sideways) is held off by the compliant coax normal (COAX_ALPHA_N = 1e-4, a soft support, not
+ * a rigid wall) plus the interleaved Gauss-Seidel solve.
+ *
+ * INTERIM VALUE 0.05: a MODEST two-way reaction. Sweeps of the current quasi-static/unit-mass regime
+ * show the coax lateral coupling is numerically delicate (an over-fed near-concentric pair buckles
+ * chaotically; a large two-way share crumples it — at ≥0.3 the wire stalls and DRAGS the sheath, an
+ * effective axial lock). 0.05 gives the sheath a real, nonzero reaction from the wire while keeping
+ * telescoping free and the pair stable. Raising it toward the 0.3–0.5 the design review recommends
+ * needs the Phase-3 real per-node mass (a heavier sheath resists being shoved). Tunable per-assembly
+ * via CoaxialAssembly.outerMassScale.
  */
-const COAX_OUTER_MASS_SCALE = 0.0;
+const COAX_OUTER_MASS_SCALE = 0.05;
+/**
+ * Optional gentle centering for experiments/visual damping. It is OFF by default because real
+ * wire-in-sheath support should come from lumen contact and clearance, not a pre-contact centreline
+ * tie that makes the wire less independent.
+ */
+const COAX_CENTERING_GAIN = 0;
 
 /**
  * Coaxial assembly: an OUTER device (sheath/catheter) sliding over an INNER device (guidewire).
@@ -1198,9 +1367,19 @@ export class CoaxialAssembly {
   /**
    * Soft lateral centering gain ∈ [0,1] in tightly-overlapped regions (design doc §6). 0 = off
    * (rely on the normal containment alone — sufficient when clearance is moderate). A small
-   * positive value firms up small-clearance tracking. Public so experiments/tests can tune it.
+   * positive value firms up small-clearance tracking. Public so experiments/tests can tune it, but
+   * defaulting it on would create an artificial centreline tie before wall contact.
    */
-  centeringGain = 0;
+  centeringGain = COAX_CENTERING_GAIN;
+
+  /**
+   * Outer (sheath) inverse-mass share in the bilateral coax-normal distribution ∈ [0,1] (design
+   * review §1.2). MUST be > 0 so the sheath feels a reaction from the wire (else it is a one-way
+   * push that violates Newton's third law and cannot telescope/straighten). Public so experiments
+   * can sweep it. Kept a minority share (the wire is the supported member that moves most) and held
+   * stable by the compliant coax normal (COAX_ALPHA_N).
+   */
+  outerMassScale = COAX_OUTER_MASS_SCALE;
 
   constructor(outer: CosseratRod, inner: CosseratRod) {
     this.outer = outer;
@@ -1233,12 +1412,22 @@ export class CoaxialAssembly {
         this.coax[i] = null; // kinematic boundary node: no coax contact
         continue;
       }
+      // Gate by material arc length before geometric nearest-segment pairing. In a curved vessel,
+      // a wire node that has already exited the sheath can be geometrically closest to a proximal
+      // sheath segment; without this check, gentle centering becomes a weak tether behind the
+      // outer tip. Coax contact only applies to the inner material still inside the outer device,
+      // with the usual open-portal blend over the distal few millimetres.
+      const axialPastTip = i * inner.h - outer.deployedLength();
+      if (axialPastTip >= COAX_PORTAL_BLEND) {
+        this.coax[i] = null;
+        continue;
+      }
       if (!closestOuterSegment(inner.x[i], outer, this.closest)) {
         this.coax[i] = null;
         continue;
       }
       // open portal: fully past the outer tip ⇒ no outer containment (governed by vessel lumen)
-      const portal = portalWeight(this.closest.pastTip, COAX_PORTAL_BLEND);
+      const portal = portalWeight(Math.max(0, axialPastTip), COAX_PORTAL_BLEND);
       // allowed inner clearance: R_outer,lumen − r_inner. A contact is engaged ONLY when the inner
       // node is at or beyond the outer channel wall (ρ ≥ allowed): a node sitting comfortably inside
       // (ρ < allowed) needs no support and gets NO contact. This matters because the channel
@@ -1249,7 +1438,9 @@ export class CoaxialAssembly {
       const allowed = Math.max(0.0, outer.coaxLumenRadius - inner.rodRadius);
       const already = this.coax[i] != null;
       const engageAt = already ? allowed - 0.5 * allowed : allowed;
-      if (portal > 0 && this.closest.rho >= engageAt) {
+      const needsWallSupport = this.closest.rho >= engageAt;
+      const needsLumenCentering = this.centeringGain > 0;
+      if (portal > 0 && (needsWallSupport || needsLumenCentering)) {
         let c = this.coax[i];
         if (!c) {
           c = makeCoaxContact(
@@ -1283,7 +1474,7 @@ export class CoaxialAssembly {
     for (const c of this.activeCoax) {
       c.lambdaN = 0; // normal multiplier is per-iteration (re-evaluated inequality)
       const portal = portalWeight(this.portalFor(c), COAX_PORTAL_BLEND);
-      solveCoaxialNormalContact(inner, outer, c, c.allowedRadius, portal, dtSeconds, COAX_OUTER_MASS_SCALE);
+      solveCoaxialNormalContact(inner, outer, c, c.allowedRadius, portal, dtSeconds, this.outerMassScale);
       if (this.centeringGain > 0) {
         solveCoaxialCentering(inner, outer, c, this.centeringGain, portal, dtSeconds);
       }
@@ -1296,25 +1487,13 @@ export class CoaxialAssembly {
   }
 
   /**
-   * Recompute the open-portal axial distance (cm) of a contact's inner node PAST the outer tip
-   * (cheap, no alloc). >0 ⇒ the node has projected beyond the outer tip node along the tip
-   * segment direction (exiting the portal); ≤0 ⇒ still inside the outer. Only meaningful when the
-   * contact is paired to the LAST outer segment.
+   * Recompute the open-portal axial distance (cm) of a contact's inner node PAST the outer tip in
+   * material coordinates. This matches buildCoaxContacts' arc-length gate and avoids treating a
+   * remote exited node as "inside" just because it is geometrically closest to a proximal sheath
+   * segment in a curved vessel.
    */
   private portalFor(c: CoaxContact): number {
-    const ox = this.outer.x;
-    const tipSeg = ox.length - 2;
-    if (tipSeg < 0) return 0;
-    if (c.outerSegment < tipSeg) return -1;
-    const a = ox[tipSeg];
-    const b = ox[ox.length - 1];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dz = b.z - a.z;
-    const len = Math.hypot(dx, dy, dz) || 1e-9;
-    const p = this.inner.x[c.node];
-    const past = ((p.x - b.x) * dx + (p.y - b.y) * dy + (p.z - b.z) * dz) / len;
-    return Math.max(0, past);
+    return Math.max(0, c.node * this.inner.h - this.outer.deployedLength());
   }
 
   /**
@@ -1339,6 +1518,8 @@ export class CoaxialAssembly {
     const itersOuter = outer.params.iterations;
     const iters = Math.max(itersInner, itersOuter);
 
+    outer.beginFrame();
+    inner.beginFrame();
     for (let sub = 0; sub < S; sub++) {
       // 1–4. each rod's substep prologue: inject/retract, predict, reset λ, build wall contacts
       outer.beginSubstep(feedOuter, 0, dtOut);
@@ -1359,6 +1540,9 @@ export class CoaxialAssembly {
         // friction phase: coax sliding friction (wall friction already ran inside iterateWallContact)
         this.solveCoaxFrictionIteration(dtIn);
       }
+      // EI-scaled global shaft-fairing passes for each rod (no-op when beamGain <= 0)
+      for (let bp = 0; bp < outer.beamPasses; bp++) outer.iterateBeam(dtOut);
+      for (let bp = 0; bp < inner.beamPasses; bp++) inner.iterateBeam(dtIn);
       outer.finishSubstep();
       inner.finishSubstep();
     }
