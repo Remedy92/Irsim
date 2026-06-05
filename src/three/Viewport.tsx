@@ -23,7 +23,7 @@ import {
   WebGLRenderTarget
 } from "three";
 import { buildNormalAnatomy } from "../sim/anatomy";
-import { CoaxialAssembly, CosseratRod, GUIDEWIRE, SHEATH } from "../sim/cosserat";
+import { CoaxialAssembly, CosseratRod, GUIDEWIRE_DIRECT, SHEATH_DIRECT } from "../sim/cosserat";
 import { useSim } from "../sim/store";
 import { makeAttenuationMaterial, makeTonemapMaterial } from "./fluoro";
 
@@ -71,8 +71,10 @@ function Engine() {
   // choose vessel-wall contacts/branches until it exits the sheath portal. Replaces legacy rod.ts.
   const assembly = useMemo(() => {
     const startId = anatomy.access.some((a) => a.id === accessId) ? accessId : anatomy.access[0].id;
-    const inner = new CosseratRod(anatomy, startId, GUIDEWIRE);
-    const outer = new CosseratRod(anatomy, startId, SHEATH);
+    // PHASE 3: the dynamic co-rotational beam (real EI, dynamic twist, telescoping) at the coarser
+    // h=0.5 direct preset (under the 60fps budget). Revert to GUIDEWIRE/SHEATH for the legacy XPBD path.
+    const inner = new CosseratRod(anatomy, startId, GUIDEWIRE_DIRECT);
+    const outer = new CosseratRod(anatomy, startId, SHEATH_DIRECT);
     return new CoaxialAssembly(outer, inner);
   }, [anatomy, accessId]);
 

@@ -1465,6 +1465,25 @@ export const GUIDEWIRE_FLOPPY: CosseratParams = { ...GUIDEWIRE, bendComplianceSc
 /** A stiffer guidewire (lower bend compliance) for comparison tests. */
 export const GUIDEWIRE_STIFF: CosseratParams = { ...GUIDEWIRE, bendComplianceScale: 0.05 };
 
+/**
+ * DIRECT-SOLVE presets (Phase 3): the dynamic co-rotational beam at a COARSER discretization
+ * (h = 0.5 cm, ~half the nodes) so the implicit solve runs under the 60fps budget (coax ~11 ms vs
+ * ~23 ms at h = 0.25). The FEM beam captures the shape with fewer elements (legacy needed h = 0.25
+ * only because XPBD under-converges), so realised EI is preserved. tipNodes/transitionNodes are halved
+ * to keep the SAME physical tip/transition lengths, and tipCurve is doubled to keep the same rest
+ * CURVATURE (rad/cm). Full h = 0.25 resolution would need the analytic consistent tangent (deferred).
+ */
+export const GUIDEWIRE_DIRECT: CosseratParams = {
+  ...GUIDEWIRE,
+  segments: 40, // h = 20/40 = 0.5 cm
+  tipNodes: 3, // 3·0.5 = 1.5 cm (= 6·0.25)
+  transitionNodes: 6, // 6·0.5 = 3 cm (= 12·0.25)
+  tipCurve: 0.44, // doubled ⇒ same rest curvature (rad/cm) as the h=0.25 preset
+  useDirectSolve: true
+};
+/** Direct-solve sheath/catheter at the matching coarser discretization. */
+export const SHEATH_DIRECT: CosseratParams = { ...SHEATH, segments: 40, useDirectSolve: true };
+
 // =============================================================================================
 // STAGE 5 — COAXIAL SHEATH OVER WIRE (design doc §6)
 // =============================================================================================

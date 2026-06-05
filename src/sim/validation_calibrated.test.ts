@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
-import { CosseratRod, GUIDEWIRE } from "./cosserat";
+import { CosseratRod, GUIDEWIRE_DIRECT } from "./cosserat";
 
-/** The dynamic co-rotational beam path — what the calibrated gates below validate (Phase 3+). */
-const DIRECT = { ...GUIDEWIRE, useDirectSolve: true };
+/** The dynamic co-rotational beam SHIPPING config (coarser h=0.5) — what the calibrated gates validate. */
+const DIRECT = GUIDEWIRE_DIRECT;
 import { buildNormalAnatomy } from "./anatomy";
 import type { Anatomy } from "./types";
 
