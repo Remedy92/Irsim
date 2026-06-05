@@ -98,8 +98,11 @@ export function beamSubstepWithContact(
     _wN[i].copy(state.omega[i]);
   }
   const rounds = Math.max(1, params.maxNewton);
+  // Full Newton each staggered round (rebuild tangent + residual, then project contact). A frozen
+  // tangent was tried for perf but the re-solve overshoots once contact moves nodes (the numerical
+  // tangent goes stale) — the correct + cheap fix is the analytic consistent tangent, pending.
   for (let it = 0; it < rounds; it++) {
-    newtonIterPublic(state, dts, params, solver);
+    newtonIter(state, dts, params, solver);
     contact();
   }
   for (let i = 0; i < n; i++) {
@@ -107,11 +110,6 @@ export function beamSubstepWithContact(
     logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
     state.omega[i].copy(_phi).multiplyScalar(1 / dts);
   }
-}
-
-/** A single Newton iteration against the CURRENT snapshot (no re-snapshot, no velocity finalize). */
-function newtonIterPublic(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
-  return newtonIter(state, dts, params, solver);
 }
 
 function substep(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): void {
@@ -190,8 +188,15 @@ function perturbNodeDof(state: BeamState, j: number, d: number, eps: number): vo
   }
 }
 
-/** One Newton iteration with a banded numerical elastic tangent. Returns ‖δu‖∞. */
-function newtonIter(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
+/**
+ * Build the (expensive) tangent A = numerical elastic Jacobian K + mass/damping diagonal + Dirichlet
+ * A-clamp. All of these are CONSTANT across the staggered contact rounds of a substep (mass/damping use
+ * the fixed snapshot qⁿ; the elastic Jacobian changes only slightly as contact projects nodes), so
+ * beamSubstepWithContact builds this ONCE per substep and re-solves with fresh residuals — a
+ * frozen-tangent quasi-Newton that removes the dominant FD cost (~12N element-force evals) from every
+ * round but the first.
+ */
+function assembleTangent(state: BeamState, dts: number, params: BeamParams): void {
   const n = state.n;
   const inv2 = 1 / (dts * dts);
   const inv1 = 1 / dts;
@@ -200,44 +205,71 @@ function newtonIter(state: BeamState, dts: number, params: BeamParams, solver: B
     _lower[i].fill(0);
     _upper[i].fill(0);
   }
-
-  // baseline internal force (also caches per-element forces)
-  computeInternalForce(state, _fIntBase);
-
+  computeInternalForce(state, _fIntBase); // caches per-element forces (the FD baseline)
   // ---- banded numerical elastic tangent K = ∂f_int/∂u ----
-  // Perturbing node j affects elements (j-1) and (j), i.e. residual nodes j-1, j, j+1 →
-  // fills upper[j-1] (block j-1,j), diag[j] (j,j), lower[j+1] (j+1,j), column 6j+d.
+  // Perturbing node j affects elements (j-1) and (j) → residual nodes j-1, j, j+1: fills
+  // upper[j-1] (block j-1,j), diag[j] (j,j), lower[j+1] (j+1,j), column 6j+d.
   for (let j = 0; j < n; j++) {
     _saveX.copy(state.x[j]);
     _saveQ.copy(state.q[j]);
     for (let d = 0; d < 6; d++) {
       const eps = FD;
       perturbNodeDof(state, j, d, eps);
-      // element j-1 (nodes j-1, j)
       if (j - 1 >= 0) {
         elementForce(state, j - 1, _fPert);
         const base = _fElem[j - 1];
         for (let a = 0; a < 6; a++) {
-          _upper[j - 1][a * 6 + d] += (_fPert[a] - base[a]) / eps; // ∂R_{j-1}/∂u_j
-          _diag[j][a * 6 + d] += (_fPert[6 + a] - base[6 + a]) / eps; // ∂R_j/∂u_j (from elem j-1)
+          _upper[j - 1][a * 6 + d] += (_fPert[a] - base[a]) / eps;
+          _diag[j][a * 6 + d] += (_fPert[6 + a] - base[6 + a]) / eps;
         }
       }
-      // element j (nodes j, j+1)
       if (j < n - 1) {
         elementForce(state, j, _fPert);
         const base = _fElem[j];
         for (let a = 0; a < 6; a++) {
-          _diag[j][a * 6 + d] += (_fPert[a] - base[a]) / eps; // ∂R_j/∂u_j (from elem j)
-          _lower[j + 1][a * 6 + d] += (_fPert[6 + a] - base[6 + a]) / eps; // ∂R_{j+1}/∂u_j
+          _diag[j][a * 6 + d] += (_fPert[a] - base[a]) / eps;
+          _lower[j + 1][a * 6 + d] += (_fPert[6 + a] - base[6 + a]) / eps;
         }
       }
-      // exact restore to baseline (no FD drift)
-      state.x[j].copy(_saveX);
+      state.x[j].copy(_saveX); // exact restore (no FD drift)
       state.q[j].copy(_saveQ);
     }
   }
+  // ---- mass/damping diagonal (constant per substep) or static regularization ----
+  if (params.static) {
+    for (let i = 0; i < n; i++) for (let d = 0; d < 6; d++) _diag[i][d * 6 + d] += 1e-8;
+  } else {
+    for (let i = 0; i < n; i++) {
+      const m = state.mass.m[i];
+      const Jb = state.mass.Jb[i];
+      const Jt = state.mass.Jt[i];
+      const D = _diag[i];
+      const at = m * inv2 + params.a0 * m * inv1;
+      D[0] += at; D[7] += at; D[14] += at;
+      const Rm = quatToMat3(_qN[i], _Rm);
+      const ax = _ax.set(Rm[2], Rm[5], Rm[8]);
+      const cInert = inv2 + params.a0 * inv1;
+      const whip = params.tauOmega > 0 ? Jt / (params.tauOmega * dts) : 0;
+      addInertiaBlock(D, Jb, Jt - Jb, ax, cInert, whip);
+    }
+  }
+  // ---- Dirichlet A-clamp (the rhs-clamp is applied per round in residualSolveApply) ----
+  for (let f = 0; f < state.fixedPrefix; f++) {
+    _diag[f].fill(0);
+    for (let d = 0; d < 6; d++) _diag[f][d * 6 + d] = 1;
+    _lower[f].fill(0);
+    _upper[f].fill(0);
+    if (f + 1 < n) _lower[f + 1].fill(0);
+    if (f > 0) _upper[f - 1].fill(0);
+  }
+}
 
-  // ---- static (quasi-static) residual: R = f_int − f_ext, A = K (elastic only) ----
+/** Build b = −R(u) at the CURRENT iterate, solve A·δu = b with the (possibly frozen) tangent, apply. */
+function residualSolveApply(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
+  const n = state.n;
+  const inv2 = 1 / (dts * dts);
+  const inv1 = 1 / dts;
+  computeInternalForce(state, _fIntBase); // fresh internal force at the current iterate
   if (params.static) {
     for (let i = 0; i < n; i++) {
       let rx = _fIntBase[6 * i], ry = _fIntBase[6 * i + 1], rz = _fIntBase[6 * i + 2];
@@ -246,59 +278,31 @@ function newtonIter(state: BeamState, dts: number, params: BeamParams, solver: B
       if (state.mext) { rrx -= state.mext[i].x; rry -= state.mext[i].y; rrz -= state.mext[i].z; }
       _rhs[6 * i] = -rx; _rhs[6 * i + 1] = -ry; _rhs[6 * i + 2] = -rz;
       _rhs[6 * i + 3] = -rrx; _rhs[6 * i + 4] = -rry; _rhs[6 * i + 5] = -rrz;
-      // tiny diagonal regularization so unconstrained-by-this-iterate DOFs stay solvable
-      for (let d = 0; d < 6; d++) _diag[i][d * 6 + d] += 1e-8;
     }
-    return solveAndApply(state, solver);
+  } else {
+    for (let i = 0; i < n; i++) {
+      const m = state.mass.m[i];
+      const Jb = state.mass.Jb[i];
+      const Jt = state.mass.Jt[i];
+      const dx = _v3a.subVectors(state.x[i], _xN[i]);
+      const Rt = _v3b.copy(dx).multiplyScalar(m * inv2 + params.a0 * m * inv1).addScaledVector(_vN[i], -m * inv2 * dts);
+      Rt.x += _fIntBase[6 * i]; Rt.y += _fIntBase[6 * i + 1]; Rt.z += _fIntBase[6 * i + 2];
+      if (state.fext) Rt.addScaledVector(state.fext[i], -1);
+      _rhs[6 * i] = -Rt.x; _rhs[6 * i + 1] = -Rt.y; _rhs[6 * i + 2] = -Rt.z;
+      const Rm = quatToMat3(_qN[i], _Rm);
+      const ax = _ax.set(Rm[2], Rm[5], Rm[8]);
+      const Phi = logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
+      const cInert = inv2 + params.a0 * inv1;
+      const whip = params.tauOmega > 0 ? Jt / (params.tauOmega * dts) : 0;
+      const rotCoef = _v3c.copy(Phi).multiplyScalar(cInert).addScaledVector(_wN[i], -inv2 * dts);
+      const Rr = _v3d.copy(rotCoef).multiplyScalar(Jb).addScaledVector(ax, (Jt - Jb) * ax.dot(rotCoef));
+      if (whip > 0) Rr.addScaledVector(ax, whip * ax.dot(Phi));
+      Rr.x += _fIntBase[6 * i + 3]; Rr.y += _fIntBase[6 * i + 4]; Rr.z += _fIntBase[6 * i + 5];
+      if (state.mext) Rr.addScaledVector(state.mext[i], -1);
+      _rhs[6 * i + 3] = -Rr.x; _rhs[6 * i + 4] = -Rr.y; _rhs[6 * i + 5] = -Rr.z;
+    }
   }
-
-  // ---- dynamic residual R = f_int − f_ext + inertial + damping, then b = −R ----
-  for (let i = 0; i < n; i++) {
-    const m = state.mass.m[i];
-    const Jb = state.mass.Jb[i];
-    const Jt = state.mass.Jt[i];
-    const D = _diag[i];
-    // translational
-    const at = m * inv2 + params.a0 * m * inv1;
-    D[0] += at; D[7] += at; D[14] += at;
-    const dx = _v3a.subVectors(state.x[i], _xN[i]);
-    const Rt = _v3b
-      .copy(dx)
-      .multiplyScalar(m * inv2 + params.a0 * m * inv1)
-      .addScaledVector(_vN[i], -m * inv2 * dts);
-    Rt.x += _fIntBase[6 * i]; Rt.y += _fIntBase[6 * i + 1]; Rt.z += _fIntBase[6 * i + 2];
-    if (state.fext) Rt.addScaledVector(state.fext[i], -1);
-    _rhs[6 * i] = -Rt.x; _rhs[6 * i + 1] = -Rt.y; _rhs[6 * i + 2] = -Rt.z;
-    // rotational
-    const Rm = quatToMat3(_qN[i], _Rm);
-    const ax = _ax.set(Rm[2], Rm[5], Rm[8]);
-    const Phi = logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
-    const cInert = inv2 + params.a0 * inv1;
-    const whip = params.tauOmega > 0 ? Jt / (params.tauOmega * dts) : 0;
-    addInertiaBlock(D, Jb, Jt - Jb, ax, cInert, whip);
-    const rotCoef = _v3c.copy(Phi).multiplyScalar(cInert).addScaledVector(_wN[i], -inv2 * dts);
-    const Rr = _v3d.copy(rotCoef).multiplyScalar(Jb).addScaledVector(ax, (Jt - Jb) * ax.dot(rotCoef));
-    if (whip > 0) Rr.addScaledVector(ax, whip * ax.dot(Phi));
-    Rr.x += _fIntBase[6 * i + 3]; Rr.y += _fIntBase[6 * i + 4]; Rr.z += _fIntBase[6 * i + 5];
-    if (state.mext) Rr.addScaledVector(state.mext[i], -1);
-    _rhs[6 * i + 3] = -Rr.x; _rhs[6 * i + 4] = -Rr.y; _rhs[6 * i + 5] = -Rr.z;
-  }
-
-  return solveAndApply(state, solver);
-}
-
-/** Apply the Dirichlet clamp, solve A·δu = b (block-tridiag), apply the increment. Returns ‖δu‖∞. */
-function solveAndApply(state: BeamState, solver: BlockTridiagSolver): number {
-  const n = state.n;
-  for (let f = 0; f < state.fixedPrefix; f++) {
-    _diag[f].fill(0);
-    for (let d = 0; d < 6; d++) _diag[f][d * 6 + d] = 1;
-    _lower[f].fill(0);
-    _upper[f].fill(0);
-    if (f + 1 < n) _lower[f + 1].fill(0);
-    if (f > 0) _upper[f - 1].fill(0);
-    for (let d = 0; d < 6; d++) _rhs[6 * f + d] = 0;
-  }
+  for (let f = 0; f < state.fixedPrefix; f++) for (let d = 0; d < 6; d++) _rhs[6 * f + d] = 0; // rhs-clamp
   const ok = solver.solve(n, 6, _lower, _diag, _upper, _rhs, _du);
   if (!ok) return 0;
   let resInf = 0;
@@ -311,6 +315,12 @@ function solveAndApply(state: BeamState, solver: BlockTridiagSolver): number {
     resInf = Math.max(resInf, dp.length(), dphi.length());
   }
   return resInf;
+}
+
+/** One full Newton iteration (rebuild tangent + residual + solve). Used by the non-staggered substep + staticSolve. */
+function newtonIter(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
+  assembleTangent(state, dts, params);
+  return residualSolveApply(state, dts, params, solver);
 }
 
 /** Quasi-static solve: Newton on f_int = f_ext (no inertia/damping). Returns the final ‖δu‖∞. */
