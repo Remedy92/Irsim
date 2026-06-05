@@ -27,7 +27,14 @@ import {
 import { Lumen } from "./lumen";
 import { BeamSolver } from "./beam";
 import { BlockTridiagSolver } from "./blocktridiag";
-import { beamSubstepWithContact, type BeamParams, type BeamState } from "./beamfem/dynamic";
+import {
+  beamSubstepWithContact,
+  readBeamPerfCounters,
+  resetBeamPerfCounters,
+  type BeamParams,
+  type BeamPerfCounters,
+  type BeamState
+} from "./beamfem/dynamic";
 import type { ElemMat } from "./beamfem/element";
 import type { LumpedMass } from "./beamfem/mass";
 import { buildElemMats, buildLumpedMassForRod, nodalFramesFromSegments, segmentFramesFromNodal } from "./beamfem/integration";
@@ -250,6 +257,7 @@ const _v = new Vector3();
 const _restAxis = new Vector3();
 const _advTan = new Vector3();
 const _sample = new Vector3();
+const _diagSample = new Vector3();
 const _selfP = new Vector3();
 const _selfQ = new Vector3();
 const _selfN = new Vector3();
@@ -1054,6 +1062,38 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return this.lq.radius;
   }
 
+  /**
+   * Diagnostic only: maximum positive vessel-envelope violation (cm) over nodes and segment midpoints.
+   * Covered guidewire material clipped into an outer sheath channel is skipped because the vessel wall is
+   * intentionally not its active constraint there. Returns 0 when every sampled point is inside.
+   */
+  maxWallPenetration(): number {
+    const q: LumenQuery = {
+      center: new Vector3(),
+      radius: 1,
+      tangent: new Vector3(0, 0, 1),
+      edgeIndex: -1,
+      arc: 0,
+      inside: true
+    };
+    let maxPen = 0;
+    const sample = (p: Vector3, seed: number): void => {
+      this.lumen.query(p, seed, q);
+      const allowed = Math.max(0.02, q.radius - this.params.rodRadius - CosseratRod.EPS_C);
+      maxPen = Math.max(maxPen, p.distanceTo(q.center) - allowed);
+    };
+    for (let i = 0; i < this.n; i++) {
+      if (this.w[i] === 0 || this.isVesselContactClippedAtNode(i)) continue;
+      sample(this.x[i], this.currentEdge[i] ?? -1);
+    }
+    for (let s = 0; s < this.n - 1; s++) {
+      if (this.isVesselContactClippedAtSegment(s)) continue;
+      _diagSample.addVectors(this.x[s], this.x[s + 1]).multiplyScalar(0.5);
+      sample(_diagSample, this.currentEdge[s + 1] ?? this.currentEdge[s] ?? -1);
+    }
+    return Math.max(0, maxPen);
+  }
+
   private isVesselContactClippedAtNode(i: number): boolean {
     return this.vesselContactClipLength > 0 && i * this.h < this.vesselContactClipLength;
   }
@@ -1467,8 +1507,9 @@ export const GUIDEWIRE_STIFF: CosseratParams = { ...GUIDEWIRE, bendComplianceSca
 
 /**
  * DIRECT-SOLVE presets (Phase 3): the dynamic co-rotational beam at a COARSER discretization
- * (h = 0.5 cm, ~half the nodes) so the implicit solve runs under the 60fps budget (coax ~11 ms vs
- * ~23 ms at h = 0.25). The FEM beam captures the shape with fewer elements (legacy needed h = 0.25
+ * (h = 0.5 cm, ~half the nodes). Phase-0 verification keeps the numerical-tangent work counted while
+ * the analytic consistent tangent remains deferred. The FEM beam captures the shape with fewer elements
+ * (legacy needed h = 0.25
  * only because XPBD under-converges), so realised EI is preserved. tipNodes/transitionNodes are halved
  * to keep the SAME physical tip/transition lengths, and tipCurve is doubled to keep the same rest
  * CURVATURE (rad/cm). Full h = 0.25 resolution would need the analytic consistent tangent (deferred).
@@ -1483,6 +1524,9 @@ export const GUIDEWIRE_DIRECT: CosseratParams = {
 };
 /** Direct-solve sheath/catheter at the matching coarser discretization. */
 export const SHEATH_DIRECT: CosseratParams = { ...SHEATH, segments: 40, useDirectSolve: true };
+/** Single source of truth for the currently shipped live app presets. */
+export const SHIPPED_GUIDEWIRE = GUIDEWIRE_DIRECT;
+export const SHIPPED_SHEATH = SHEATH_DIRECT;
 
 // =============================================================================================
 // STAGE 5 — COAXIAL SHEATH OVER WIRE (design doc §6)
@@ -1801,5 +1845,13 @@ export class CoaxialAssembly {
     let s = 0;
     for (const c of this.activeCoax) s += Math.max(0, c.lambdaN);
     return s;
+  }
+
+  resetDirectPerfCounters(): void {
+    resetBeamPerfCounters();
+  }
+
+  directPerfCounters(): BeamPerfCounters {
+    return readBeamPerfCounters();
   }
 }

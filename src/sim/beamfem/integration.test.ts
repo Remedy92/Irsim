@@ -80,4 +80,16 @@ describe("beamfem integration — segment ↔ nodal frame bridge", () => {
     expect(twist(back[0])).toBeGreaterThan(twist(segQ[0]) - 1e-6);
     expect(twist(back[back.length - 1])).toBeLessThan(twist(segQ[segQ.length - 1]) + 1e-6);
   });
+
+  it("RED BASELINE: repeated segment↔nodal frame bridging does not bleed a twist gradient", () => {
+    let segQ = Array.from({ length: 8 }, (_, j) => {
+      const a = (j + 1) * 0.12;
+      return new Quaternion(0, 0, Math.sin(a / 2), Math.cos(a / 2));
+    });
+    const twist = (q: Quaternion) => 2 * Math.atan2(q.z, q.w);
+    const initialSpan = twist(segQ[segQ.length - 1]) - twist(segQ[0]);
+    for (let r = 0; r < 20; r++) segQ = segmentFramesFromNodal(nodalFramesFromSegments(segQ));
+    const finalSpan = twist(segQ[segQ.length - 1]) - twist(segQ[0]);
+    expect(finalSpan / initialSpan).toBeGreaterThan(0.95);
+  });
 });

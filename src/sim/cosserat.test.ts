@@ -6,6 +6,8 @@ import {
   GUIDEWIRE,
   GUIDEWIRE_FLOPPY,
   GUIDEWIRE_STIFF,
+  SHIPPED_GUIDEWIRE,
+  SHIPPED_SHEATH,
   SHEATH
 } from "./cosserat";
 import { buildNormalAnatomy } from "./anatomy";
@@ -650,8 +652,8 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
   /** Build the assembly exactly as Viewport.tsx does (default right-femoral access). */
   function buildAppAssembly(accessId = "rcfa"): CoaxialAssembly {
     const anatomy = buildNormalAnatomy();
-    const inner = new CosseratRod(anatomy, accessId, GUIDEWIRE);
-    const outer = new CosseratRod(anatomy, accessId, SHEATH);
+    const inner = new CosseratRod(anatomy, accessId, SHIPPED_GUIDEWIRE);
+    const outer = new CosseratRod(anatomy, accessId, SHIPPED_SHEATH);
     return new CoaxialAssembly(outer, inner);
   }
 
@@ -700,7 +702,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     expect(depth1).toBeGreaterThan(depth0 + 8);
     expect(tipDist1).toBeGreaterThan(tipDist0 + 3);
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
-  });
+  }, 20000);
 
   it("rolling the hub (torque) and steering stay finite and rotate the tip frame", () => {
     const asm = buildAppAssembly();
@@ -748,7 +750,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     expect(deep).toBeGreaterThan(shallow + 6); // material was withdrawn
     expect(asm.inner.n).toBeGreaterThanOrEqual(3); // never collapses below the minimum node count
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
-  });
+  }, 20000);
 
   it(
     "drives the wire and sheath to independent deployments without coupling or exploding",

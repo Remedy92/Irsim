@@ -54,6 +54,25 @@ export interface BeamState {
   mext?: Vector3[];
 }
 
+export interface BeamPerfCounters {
+  tangentAssemblies: number;
+  elementForceEvals: number;
+}
+
+const perfCounters: BeamPerfCounters = {
+  tangentAssemblies: 0,
+  elementForceEvals: 0
+};
+
+export function resetBeamPerfCounters(): void {
+  perfCounters.tangentAssemblies = 0;
+  perfCounters.elementForceEvals = 0;
+}
+
+export function readBeamPerfCounters(): BeamPerfCounters {
+  return { ...perfCounters };
+}
+
 const FD = 1e-6; // finite-difference step for the numerical tangent
 
 /** Advance the beam by one frame of `dtFrame` seconds. */
@@ -134,6 +153,7 @@ function substep(state: BeamState, dts: number, params: BeamParams, solver: Bloc
 
 /** Co-rotational global internal force (12) for element e into `out`. */
 function elementForce(state: BeamState, e: number, out: Float64Array): void {
+  perfCounters.elementForceEvals++;
   const pi = state.x[e];
   const pj = state.x[e + 1];
   const qi = state.q[e];
@@ -190,13 +210,12 @@ function perturbNodeDof(state: BeamState, j: number, d: number, eps: number): vo
 
 /**
  * Build the (expensive) tangent A = numerical elastic Jacobian K + mass/damping diagonal + Dirichlet
- * A-clamp. All of these are CONSTANT across the staggered contact rounds of a substep (mass/damping use
- * the fixed snapshot qⁿ; the elastic Jacobian changes only slightly as contact projects nodes), so
- * beamSubstepWithContact builds this ONCE per substep and re-solves with fresh residuals — a
- * frozen-tangent quasi-Newton that removes the dominant FD cost (~12N element-force evals) from every
- * round but the first.
+ * A-clamp. This is rebuilt on every staggered round today because the contact projection can move
+ * nodes enough to stale the numerical tangent. The counted Phase-0 perf gate makes that cost visible;
+ * an analytic consistent tangent is the intended optimization path.
  */
 function assembleTangent(state: BeamState, dts: number, params: BeamParams): void {
+  perfCounters.tangentAssemblies++;
   const n = state.n;
   const inv2 = 1 / (dts * dts);
   const inv1 = 1 / dts;
