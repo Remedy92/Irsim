@@ -563,10 +563,10 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
     expect(allFinite(inner) && allFinite(outer)).toBe(true);
   });
 
-  it("CLEARANCE: the default coax model does not pre-center a wire before sheath-wall contact", () => {
-    // A guidewire sitting inside the sheath clearance should remain a free, independent device until
-    // it actually contacts the inner wall. This guards against turning the coax model into a hidden
-    // centerline tie.
+  it("SHEATH CHANNEL: covered guidewire material is governed by the sheath, not the vessel wall", () => {
+    // A guidewire sitting inside the sheath should travel in the sheath channel and leave through
+    // the open portal. The overlapped section gets a weak radial channel constraint even before hard
+    // wall contact; only the lead-out beyond the sheath tip is a free vessel-navigating wire.
     const outer = new CosseratRod(straight(2, 30), "a", SHEATH);
     const inner = new CosseratRod(straight(2, 30), "a", GUIDEWIRE);
     const asm = new CoaxialAssembly(outer, inner);
@@ -582,9 +582,11 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
       }
     }
 
-    expect(maxOverlapRho(inner, outer)).toBeLessThan(outer.coaxLumenRadius - inner.rodRadius);
+    const before = maxOverlapRho(inner, outer);
+    expect(before).toBeLessThan(outer.coaxLumenRadius - inner.rodRadius);
     asm.step(1 / 60);
-    expect(asm.activeCoaxCount()).toBe(0);
+    expect(asm.activeCoaxCount()).toBeGreaterThan(0);
+    expect(maxOverlapRho(inner, outer)).toBeLessThan(before);
     expect(allFinite(inner) && allFinite(outer)).toBe(true);
   });
 
@@ -596,14 +598,6 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
     // peak load + stability), NOT a solo-vs-coax buckling-magnitude ratio: free buckling is a
     // bifurcation and its magnitude is chaotic (hypersensitive to tiny solver changes), so a
     // magnitude comparison is not a reliable regression.
-    const overlapDev = (rod: CosseratRod) => {
-      let m = 0;
-      for (let i = 1; i < rod.n; i++) {
-        const p = rod.x[i];
-        if (p.y > 1 && p.y < 9) m = Math.max(m, Math.hypot(p.x, p.z));
-      }
-      return m;
-    };
     const tubeLen = 15;
     const inner = new CosseratRod(straight(5, tubeLen), "a", GUIDEWIRE);
     const outer = new CosseratRod(straight(5, tubeLen), "a", SHEATH);
@@ -616,11 +610,10 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
       peakLoad = Math.max(peakLoad, asm.coaxNormalLoad());
     }
 
-    // the overlapped wire stays near the sheath centerline instead of bowing freely through the wide
-    // vessel; this is intentionally looser than the nominal clearance because the support is a
-    // compliant contact solved in a real-time iteration budget.
-    expect(overlapDev(inner)).toBeLessThan(1.0);
-    expect(maxOverlapRho(inner, outer)).toBeLessThan(0.5);
+    // The relevant invariant is relative: the covered guidewire stays inside the sheath channel
+    // instead of following an independent vessel path. The absolute vessel-frame bow can be large
+    // because the sheath itself is allowed to bow.
+    expect(maxOverlapRho(inner, outer)).toBeLessThan(0.25);
     expect(allFinite(inner) && allFinite(outer)).toBe(true);
     // the coax containment is load-bearing at some point (the two-way support actually engaged)
     expect(peakLoad).toBeGreaterThan(1e-6);

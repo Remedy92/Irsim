@@ -374,6 +374,15 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   input: RodInput = { deployed: 8, steer: 0.45, torque: 0 };
 
   /**
+   * When this rod is the INNER member of a coaxial pair, proximal material up to this arc length is
+   * inside the OUTER device's channel. That material is governed by sheath containment, not direct
+   * vessel-wall contact; only the lead-out beyond the outer tip should query the vessel lumen.
+   */
+  vesselContactClipLength = 0;
+  /** Raw lumen radius (cm) used for CFL while the rod is inside the outer channel. */
+  vesselContactClipRadius = 0;
+
+  /**
    * Uniform external BODY FORCE per node (cm-units force; applied as acceleration w·F in the
    * Verlet predict). Zero by default — the live trainer drives the rod by feed + contact only,
    * not gravity. This is a hook for future physical forcing (gravity / blood-flow / bench-test
@@ -755,6 +764,10 @@ export class CosseratRod implements Injectable, NodeContactTarget {
         this.contacts[i] = null; // kinematic boundary: no wall contact
         continue;
       }
+      if (this.isVesselContactClippedAtNode(i)) {
+        this.contacts[i] = null; // inside a sheath/catheter channel: vessel wall is not visible
+        continue;
+      }
       const p = this.x[i];
       // graph-aware nearest-edge query with hysteresis (lumen.ts); persists the chosen edge.
       this.currentEdge[i] = this.lumen.query(p, this.currentEdge[i] ?? -1, this.lq);
@@ -811,6 +824,10 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       // skip segments incident to the kinematic boundary node (their motion is prescribed)
       if (this.w[s] === 0 || this.w[s + 1] === 0) {
         this.segContacts[s] = null;
+        continue;
+      }
+      if (this.isVesselContactClippedAtSegment(s)) {
+        this.segContacts[s] = null; // segment is still inside the outer channel
         continue;
       }
       _sample.addVectors(this.x[s], this.x[s + 1]).multiplyScalar(0.5);
@@ -970,6 +987,9 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    * lumen once. Returns a generous default if no lumen exists (e.g. a free-space test tube).
    */
   private localLumenRadius(i: number): number {
+    if (this.isVesselContactClippedAtNode(i) && this.vesselContactClipRadius > 0) {
+      return this.vesselContactClipRadius;
+    }
     const e = this.currentEdge[i] ?? -1;
     if (e >= 0 && e < this.lumen.edges.length) {
       const edge = this.lumen.edges[e];
@@ -978,6 +998,14 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     }
     this.currentEdge[i] = this.lumen.query(this.x[i], -1, this.lq);
     return this.lq.radius;
+  }
+
+  private isVesselContactClippedAtNode(i: number): boolean {
+    return this.vesselContactClipLength > 0 && i * this.h < this.vesselContactClipLength;
+  }
+
+  private isVesselContactClippedAtSegment(s: number): boolean {
+    return this.vesselContactClipLength > 0 && (s + 0.5) * this.h < this.vesselContactClipLength;
   }
 
   private resetElasticLambdas(): void {
@@ -1333,11 +1361,12 @@ const COAX_PORTAL_BLEND = 0.4;
  */
 const COAX_OUTER_MASS_SCALE = 0.05;
 /**
- * Optional gentle centering for experiments/visual damping. It is OFF by default because real
- * wire-in-sheath support should come from lumen contact and clearance, not a pre-contact centreline
- * tie that makes the wire less independent.
+ * Gentle sheath-channel centering for the overlapped guidewire. Vessel contact is disabled for
+ * covered material, so this low-gain pull makes the wire travel inside the sheath lumen and leave
+ * through the sheath portal instead of keeping an independent vessel path. It is deliberately weak:
+ * hard containment still comes from the sheath inner-wall normal constraint.
  */
-const COAX_CENTERING_GAIN = 0;
+const COAX_CENTERING_GAIN = 0.02;
 
 /**
  * Coaxial assembly: an OUTER device (sheath/catheter) sliding over an INNER device (guidewire).
@@ -1365,10 +1394,8 @@ export class CoaxialAssembly {
   private readonly closest: CoaxClosest = { segment: -1, u: 0, rho: 0, pastTip: -1 };
 
   /**
-   * Soft lateral centering gain ∈ [0,1] in tightly-overlapped regions (design doc §6). 0 = off
-   * (rely on the normal containment alone — sufficient when clearance is moderate). A small
-   * positive value firms up small-clearance tracking. Public so experiments/tests can tune it, but
-   * defaulting it on would create an artificial centreline tie before wall contact.
+   * Soft lateral centering gain ∈ [0,1] for material inside the outer channel. This is not an axial
+   * tie: it only damps radial play inside the sheath and is ramped off at the open portal.
    */
   centeringGain = COAX_CENTERING_GAIN;
 
@@ -1523,6 +1550,11 @@ export class CoaxialAssembly {
     for (let sub = 0; sub < S; sub++) {
       // 1–4. each rod's substep prologue: inject/retract, predict, reset λ, build wall contacts
       outer.beginSubstep(feedOuter, 0, dtOut);
+      // Covered inner material is physically inside the sheath/catheter channel. It should not build
+      // vessel-wall contacts or choose vessel branches until it reaches the open portal at the outer
+      // tip; before that, coax containment owns its path.
+      inner.vesselContactClipLength = Math.max(0, outer.deployedLength() - COAX_PORTAL_BLEND);
+      inner.vesselContactClipRadius = outer.coaxLumenRadius;
       inner.beginSubstep(feedInner, 0, dtIn);
       // coax pairing (after both predicted, before the interleaved solve)
       this.buildCoaxContacts();

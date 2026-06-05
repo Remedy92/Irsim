@@ -66,11 +66,9 @@ function Engine() {
   const accessId = useSim((s) => s.accessId);
 
   // New Cosserat-XPBD instruments: a guidewire (inner) sliding inside a sheath (outer), both
-  // entering at the selected femoral access. The assembly couples them only through coax
-  // contact + friction (no hand-coded tie); each carries its own graded MaterialField, insertion
-  // boundary condition, and in-loop frictional wall contact. The wire and sheath are driven
-  // INDEPENDENTLY (see useFrame): there is no slaving between them — that coupling is physical,
-  // emerging from the coax contact alone. Replaces the legacy PBD rod.ts.
+  // entering at the selected femoral access. The wire and sheath are driven independently (see
+  // useFrame), but covered guidewire material is routed through the sheath channel: it does not
+  // choose vessel-wall contacts/branches until it exits the sheath portal. Replaces legacy rod.ts.
   const assembly = useMemo(() => {
     const startId = anatomy.access.some((a) => a.id === accessId) ? accessId : anatomy.access[0].id;
     const inner = new CosseratRod(anatomy, startId, GUIDEWIRE);
@@ -229,9 +227,8 @@ function Engine() {
 
     // input -> physics. The wire and sheath are driven INDEPENDENTLY from their own store inputs
     // through each rod's velocity-controlled insertion BC (deployed → feed velocity target,
-    // torque → hub roll target, steer → tip precurve scale). Neither follows the other: the soft
-    // wire tip leads or trails purely as the operator drives it, and the supportive coupling
-    // emerges from coax contact + friction in the assembly — not a hand-coded slave ratio.
+    // torque → hub roll target, steer → tip precurve scale). The overlapped guidewire is contained
+    // by the sheath channel and becomes a free vessel-navigating wire only beyond the sheath tip.
     const inner = assembly.inner;
     const outer = assembly.outer;
     inner.input.deployed = s.wire.deployed;
