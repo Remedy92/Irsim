@@ -254,6 +254,7 @@ export interface RodInput {
 }
 
 const _v = new Vector3();
+const _bodyZ = new Vector3(0, 0, 1);
 const _restAxis = new Vector3();
 const _advTan = new Vector3();
 const _sample = new Vector3();
@@ -301,6 +302,62 @@ function closestOnSeg(p: Vector3, a: Vector3, b: Vector3, out: Vector3): number 
   const t = Math.max(0, Math.min(1, _segAp.dot(_segAb) / len2));
   out.copy(a).addScaledVector(_segAb, t);
   return t;
+}
+
+function frameFromTangent(tangent: Vector3, fallback: AccessFrame, out: Quaternion): Quaternion {
+  const len = tangent.length();
+  if (len <= 1e-9) return out.copy(fallback.frame);
+  _advTan.copy(tangent).multiplyScalar(1 / len);
+  return out.setFromUnitVectors(_bodyZ, _advTan);
+}
+
+function accessPathPoint(anatomy: Anatomy, site: Anatomy["access"][number], distance: number): Vector3 | null {
+  const branch = anatomy.branches.find((b) => b.id === site.branchId);
+  if (!branch || branch.points.length < 2) return null;
+
+  let idx = 0;
+  let best = Infinity;
+  for (let i = 0; i < branch.points.length; i++) {
+    const d = branch.points[i].pos.distanceToSquared(site.pos);
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+
+  let dir = 1;
+  if (idx === branch.points.length - 1) dir = -1;
+  else if (idx > 0) {
+    const prevDot = _segAb.subVectors(branch.points[idx - 1].pos, branch.points[idx].pos).dot(site.dir);
+    const nextDot = _segAp.subVectors(branch.points[idx + 1].pos, branch.points[idx].pos).dot(site.dir);
+    dir = prevDot > nextDot ? -1 : 1;
+  }
+
+  const p = site.pos.clone();
+  let remaining = distance;
+  let current = idx;
+  while (remaining > 0) {
+    const next = current + dir;
+    if (next < 0 || next >= branch.points.length) {
+      p.addScaledVector(site.dir, remaining);
+      break;
+    }
+    const target = branch.points[next].pos;
+    _segAb.subVectors(target, p);
+    const segLen = _segAb.length();
+    if (segLen <= 1e-9) {
+      current = next;
+      continue;
+    }
+    if (remaining <= segLen) {
+      p.addScaledVector(_segAb, remaining / segLen);
+      break;
+    }
+    p.copy(target);
+    remaining -= segLen;
+    current = next;
+  }
+  return p;
 }
 
 export class CosseratRod implements Injectable, NodeContactTarget {
@@ -483,10 +540,11 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   private tmpB = new Quaternion();
   private tmpC = new Quaternion();
 
-  constructor(anatomy: Anatomy, accessId: string, params: CosseratParams = GUIDEWIRE) {
+  constructor(anatomy: Anatomy, accessId: string, params: CosseratParams = GUIDEWIRE, initialInput?: Partial<RodInput>) {
     this.params = params;
     this.h = params.referenceLength / params.segments;
     this.beamGain = params.beamGain;
+    if (initialInput) this.input = { ...this.input, ...initialInput };
 
     const site = anatomy.access.find((a) => a.id === accessId) ?? anatomy.access[0];
     this.access = buildAccessFrame(site);
@@ -505,7 +563,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     this.prev = [];
     this.w = [];
     for (let i = 0; i < this.n; i++) {
-      const p = this.access.x.clone().addScaledVector(this.access.e, i * this.h);
+      const p = accessPathPoint(anatomy, site, i * this.h) ?? this.access.x.clone().addScaledVector(this.access.e, i * this.h);
       this.x.push(p);
       this.prev.push(p.clone());
       // The proximal node (index 0) is the KINEMATIC insertion boundary: it is held at the
@@ -518,12 +576,13 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       this.w.push(i === 0 ? 0 : 1);
     }
 
-    const baseQ = injectedFrame(this.access, 0, new Quaternion());
     this.q = [];
     this.wq = [];
     this.restLen = [];
     for (let j = 0; j < segs; j++) {
-      this.q.push(baseQ.clone());
+      const q = new Quaternion();
+      frameFromTangent(_segAb.subVectors(this.x[j + 1], this.x[j]), this.access, q);
+      this.q.push(q);
       this.wq.push(j === 0 ? 0 : 1); // proximal frame kinematic = access frame (rolled by hub)
       this.restLen.push(this.h);
     }
@@ -1525,22 +1584,20 @@ export const GUIDEWIRE_DIRECT: CosseratParams = {
 /** Direct-solve sheath/catheter at the matching coarser discretization. */
 export const SHEATH_DIRECT: CosseratParams = { ...SHEATH, segments: 40, useDirectSolve: true };
 /** Single source of truth for the currently shipped live app presets. */
-export const SHIPPED_GUIDEWIRE = GUIDEWIRE_DIRECT;
-export const SHIPPED_SHEATH = SHEATH_DIRECT;
+export const SHIPPED_GUIDEWIRE = GUIDEWIRE;
+export const SHIPPED_SHEATH = SHEATH;
 
 // =============================================================================================
 // STAGE 5 — COAXIAL SHEATH OVER WIRE (design doc §6)
 // =============================================================================================
 
 /**
- * Coax normal-containment compliance (cm-units). DELIBERATELY softer than the rigid vessel wall
- * (CosseratRod.ALPHA_N = 1e-9): the sheath gives SLIDING lateral SUPPORT, not a hard wall (design
- * doc §6 uses high-compliance support, η≈0.1–0.5). A near-rigid coax normal on a nearly-concentric
- * pair is ill-conditioned (the 3-body distribution feeds back into both rods' elastic solves and
- * buckles them near the access); a compliant support is stable AND is what physically firms up the
- * wire in a curve without a hand-coded tie.
+ * Coax normal-containment compliance (cm-units). The shipped app treats the catheter lumen as a
+ * stiff cylindrical support for the covered wire: the wire may slide axially with friction, but its
+ * centerline should not leave the catheter's inner radius before the open portal.
  */
-const COAX_ALPHA_N = 1e-4;
+const COAX_ALPHA_N = 1e-8;
+const COAX_DIRECT_ALPHA_N = 1e-4;
 /** Coax friction compliance (cm-units). */
 const COAX_ALPHA_T = 1e-6;
 /**
@@ -1558,29 +1615,20 @@ const COAX_MU_KINETIC = 0.02;
  */
 const COAX_PORTAL_BLEND = 0.4;
 /**
- * How much of the bilateral coax-normal correction the OUTER sheath absorbs (its inverse-mass
- * scale in the 3-body distribution). The sheath is the heavier/stiffer SUPPORT, so it takes a
- * SMALLER share than the inner and the contained inner takes most of the move (design doc §6
- * mass-weighted distribution). This is NOT an axial tie — it only weights the lateral support.
- *
- * IT MUST BE > 0 (design review §1.2): at exactly 0 the outer endpoints contribute nothing to the
- * 3-body distribution, so the sheath receives ZERO reaction from the wire — a Newton's-third-law
- * violation. A stiff wire then cannot straighten/drag/telescope the sheath, and the wire gets no
- * BILATERAL lateral support. A small positive share gives the sheath a real (minority) reaction: the
- * wire is still the one mostly moved (it is the supported member), but the sheath now genuinely feels
- * the wire. The stability worry the old 0.0 cited (a near-concentric pair shoving the advection-driven
- * outer sideways) is held off by the compliant coax normal (COAX_ALPHA_N = 1e-4, a soft support, not
- * a rigid wall) plus the interleaved Gauss-Seidel solve.
- *
- * INTERIM VALUE 0.05: a MODEST two-way reaction. Sweeps of the current quasi-static/unit-mass regime
- * show the coax lateral coupling is numerically delicate (an over-fed near-concentric pair buckles
- * chaotically; a large two-way share crumples it — at ≥0.3 the wire stalls and DRAGS the sheath, an
- * effective axial lock). 0.05 gives the sheath a real, nonzero reaction from the wire while keeping
- * telescoping free and the pair stable. Raising it toward the 0.3–0.5 the design review recommends
- * needs the Phase-3 real per-node mass (a heavier sheath resists being shoved). Tunable per-assembly
- * via CoaxialAssembly.outerMassScale.
+ * Covered wire nodes pair to the catheter lumen near their material coordinate, not to the
+ * globally nearest segment. The local window allows axial sliding inside a curved catheter while
+ * preventing a protruded/free wire from being tethered to a distant proximal bend.
  */
-const COAX_OUTER_MASS_SCALE = 0.05;
+const COAX_ARC_PAIR_WINDOW_CM = 1.0;
+/**
+ * How much of the radial coax-normal correction the OUTER sheath absorbs. The current live solver
+ * has no calibrated per-node masses, so a two-way share lets the wire shove the catheter sideways
+ * instead of staying inside its cylinder. Keep the shipped path one-way radially: the sheath is the
+ * support surface, the wire is corrected inside it. Axial motion is still untied and only resisted
+ * by instrument-instrument friction.
+ */
+const COAX_OUTER_MASS_SCALE = 0;
+const COAX_DIRECT_OUTER_MASS_SCALE = 0.05;
 /**
  * Gentle sheath-channel centering for the overlapped guidewire. Vessel contact is disabled for
  * covered material, so this low-gain pull makes the wire travel inside the sheath lumen and leave
@@ -1594,8 +1642,8 @@ const COAX_CENTERING_GAIN = 0.02;
  * Each is its own free CosseratRod with its own MaterialProfile, access, insertion BC, and wall
  * contact — they are NOT merged (design doc §6). The coupling is purely contact + friction:
  *
- *   - inner-in-outer NORMAL containment (bilateral, 3-body, mass-weighted) — this is where
- *     catheter-over-wire SUPPORT emerges with no hand-coded stiffness tie;
+ *   - inner-in-outer NORMAL containment — in the shipped XPBD path the catheter is the radial
+ *     support cylinder; the experimental direct-beam path can still use a two-way mass share;
  *   - coax Coulomb FRICTION (μ_io < wall), with NO axial distance constraint, so the inner
  *     slides freely along the outer except for friction;
  *   - an OPEN PORTAL at the outer tip (the inner exits with no fake obstruction).
@@ -1613,6 +1661,7 @@ export class CoaxialAssembly {
   private coax: (CoaxContact | null)[] = [];
   private activeCoax: CoaxContact[] = [];
   private readonly closest: CoaxClosest = { segment: -1, u: 0, rho: 0, pastTip: -1 };
+  private readonly coaxAlphaN: number;
 
   /**
    * Soft lateral centering gain ∈ [0,1] for material inside the outer channel. This is not an axial
@@ -1621,17 +1670,21 @@ export class CoaxialAssembly {
   centeringGain = COAX_CENTERING_GAIN;
 
   /**
-   * Outer (sheath) inverse-mass share in the bilateral coax-normal distribution ∈ [0,1] (design
-   * review §1.2). MUST be > 0 so the sheath feels a reaction from the wire (else it is a one-way
-   * push that violates Newton's third law and cannot telescope/straighten). Public so experiments
-   * can sweep it. Kept a minority share (the wire is the supported member that moves most) and held
-   * stable by the compliant coax normal (COAX_ALPHA_N).
+   * Outer (sheath) inverse-mass share in the radial coax-normal distribution ∈ [0,1]. Kept at 0 in
+   * the shipped path so the catheter behaves as the support cylinder for covered wire material.
+   * Public so experiments can sweep it once real catheter mass is modelled.
    */
   outerMassScale = COAX_OUTER_MASS_SCALE;
 
   constructor(outer: CosseratRod, inner: CosseratRod) {
     this.outer = outer;
     this.inner = inner;
+    this.coaxAlphaN =
+      outer.params.useDirectSolve && inner.params.useDirectSolve ? COAX_DIRECT_ALPHA_N : COAX_ALPHA_N;
+    this.outerMassScale =
+      outer.params.useDirectSolve && inner.params.useDirectSolve
+        ? COAX_DIRECT_OUTER_MASS_SCALE
+        : COAX_OUTER_MASS_SCALE;
   }
 
   /** Convenience: set the legacy deployed/steer/torque input on the inner wire. */
@@ -1644,11 +1697,63 @@ export class CoaxialAssembly {
   }
 
   /**
-   * Build / refresh the persistent coax contacts for this substep. For each FREE inner node we
-   * pair it to the closest OUTER segment; a node whose closest point is at/over the outer tip is
-   * in the open-portal blend (containment ramps off — never a hard cap). Reuses Contact objects so
-   * the coax friction anchors persist. Populates this.activeCoax. Geometry + lifecycle only — the
-   * projection happens in solveCoaxNormalIteration / solveCoaxFrictionIteration.
+   * Locate the sheath/catheter lumen near MATERIAL arc length, not by global nearest segment.
+   * A covered guidewire node at arc length s must live inside the local catheter cylinder around
+   * s; in a curved vessel, global nearest pairing can attach it to the wrong bend and let the wire
+   * appear to come from beside the catheter instead of from inside its lumen.
+   */
+  private closestOuterAtArc(innerPoint: Vector3, arc: number, out: CoaxClosest): boolean {
+    const outer = this.outer;
+    const segs = outer.restLen.length;
+    if (segs < 1 || outer.x.length < 2) return false;
+
+    const deployed = outer.deployedLength();
+    const clampedArc = Math.max(0, Math.min(arc, deployed));
+    let s = 0;
+    let k = 0;
+    while (k < segs - 1 && s + outer.restLen[k] < clampedArc) {
+      s += outer.restLen[k];
+      k++;
+    }
+
+    const windowSegs = Math.max(1, Math.ceil(COAX_ARC_PAIR_WINDOW_CM / outer.h));
+    const lo = Math.max(0, k - windowSegs);
+    const hi = Math.min(segs - 1, k + windowSegs);
+    let bestSeg = -1;
+    let bestU = 0;
+    let bestRho = Infinity;
+    for (let j = lo; j <= hi; j++) {
+      const a = outer.x[j];
+      const b = outer.x[j + 1];
+      const u = closestOnSeg(innerPoint, a, b, _diagSample);
+      _segAb.subVectors(b, a);
+      const len = _segAb.length();
+      if (len <= 1e-9) continue;
+      _segAb.multiplyScalar(1 / len);
+      _segAp.subVectors(innerPoint, _diagSample);
+      _segAp.addScaledVector(_segAb, -_segAp.dot(_segAb));
+      const rho = _segAp.length();
+      if (rho < bestRho) {
+        bestRho = rho;
+        bestSeg = j;
+        bestU = u;
+      }
+    }
+    if (bestSeg < 0) return false;
+    out.segment = bestSeg;
+    out.u = bestU;
+    out.rho = bestRho;
+    out.pastTip = Math.max(0, arc - deployed);
+    return true;
+  }
+
+  /**
+   * Build / refresh the persistent coax contacts for this substep. For each FREE inner node whose
+   * material coordinate is still covered by the outer catheter, pair it to the local OUTER lumen
+   * near the same material arc length. Nodes beyond the outer tip enter the open-portal blend and
+   * then fully become vessel-guided wire. Reuses Contact objects so the coax friction anchors
+   * persist. Populates this.activeCoax. Geometry + lifecycle only — projection happens in
+   * solveCoaxNormalIteration / solveCoaxFrictionIteration.
    */
   private buildCoaxContacts(): void {
     this.activeCoax.length = 0;
@@ -1660,17 +1765,17 @@ export class CoaxialAssembly {
         this.coax[i] = null; // kinematic boundary node: no coax contact
         continue;
       }
-      // Gate by material arc length before geometric nearest-segment pairing. In a curved vessel,
-      // a wire node that has already exited the sheath can be geometrically closest to a proximal
-      // sheath segment; without this check, gentle centering becomes a weak tether behind the
-      // outer tip. Coax contact only applies to the inner material still inside the outer device,
-      // with the usual open-portal blend over the distal few millimetres.
-      const axialPastTip = i * inner.h - outer.deployedLength();
+      const arc = i * inner.h;
+      const axialPastTip = arc - outer.deployedLength();
       if (axialPastTip >= COAX_PORTAL_BLEND) {
         this.coax[i] = null;
         continue;
       }
-      if (!closestOuterSegment(inner.x[i], outer, this.closest)) {
+      const paired =
+        outer.params.useDirectSolve && inner.params.useDirectSolve
+          ? closestOuterSegment(inner.x[i], outer, this.closest)
+          : this.closestOuterAtArc(inner.x[i], arc, this.closest);
+      if (!paired) {
         this.coax[i] = null;
         continue;
       }
@@ -1697,9 +1802,9 @@ export class CoaxialAssembly {
             COAX_MU_STATIC,
             COAX_MU_KINETIC,
             0,
-            COAX_ALPHA_N,
+            this.coaxAlphaN,
             COAX_ALPHA_T,
-            COAX_ALPHA_N
+            this.coaxAlphaN
           );
           this.coax[i] = c;
         } else {
@@ -1742,6 +1847,13 @@ export class CoaxialAssembly {
    */
   private portalFor(c: CoaxContact): number {
     return Math.max(0, c.node * this.inner.h - this.outer.deployedLength());
+  }
+
+  private outerTipTangent(out: Vector3): Vector3 {
+    if (this.outer.n < 2) return out.copy(this.outer.access.e);
+    out.subVectors(this.outer.x[this.outer.n - 1], this.outer.x[this.outer.n - 2]);
+    if (out.lengthSq() <= 1e-12) return out.copy(this.outer.access.e);
+    return out.normalize();
   }
 
   /**
@@ -1840,6 +1952,31 @@ export class CoaxialAssembly {
   activeCoaxCount(): number {
     return this.activeCoax.length;
   }
+
+  /** Radial clearance available to the inner wire centerline inside the outer catheter lumen. */
+  innerClearance(): number {
+    return Math.max(0, this.outer.coaxLumenRadius - this.inner.rodRadius);
+  }
+
+  /** Positive distance means the inner wire tip protrudes beyond the open catheter tip. */
+  innerExitPastOuterTip(): number {
+    return _diagSample.subVectors(this.inner.tip(), this.outer.tip()).dot(this.outerTipTangent(_segAb));
+  }
+
+  /** Max radial offset of still-covered inner wire nodes from the same-arc catheter lumen centerline. */
+  maxCoveredInnerRho(): number {
+    let max = 0;
+    const coveredArc = this.outer.deployedLength() - 0.5;
+    for (let i = 1; i < this.inner.n - 1; i++) {
+      const arc = i * this.inner.h;
+      if (arc >= coveredArc) continue;
+      if (this.closestOuterAtArc(this.inner.x[i], arc, this.closest)) {
+        max = Math.max(max, this.closest.rho);
+      }
+    }
+    return max;
+  }
+
   /** Sum of the stored coax normal multipliers (diagnostics/tests — the support load). */
   coaxNormalLoad(): number {
     let s = 0;

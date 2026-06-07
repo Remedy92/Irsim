@@ -1,0 +1,297 @@
+{
+  "url": "http://localhost:5179/",
+  "thresholds": {
+    "maxWallPenetrationCm": 0.05,
+    "maxSegmentErrorCm": 0.15,
+    "maxSettleSpeedCmS": 2,
+    "minWireExitCm": 3,
+    "maxCoveredRhoSlackCm": 0.02
+  },
+  "reports": [
+    {
+      "name": "wire-forward-28x-w",
+      "frames": 803,
+      "final": {
+        "frame": 925,
+        "time": 7.707900000005969,
+        "dt": 0.008199999988079071,
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 19.199999999999996,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 6.5,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 19.199999999999996,
+          "tipToTarget": 8.136178425641518,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 77,
+            "deployed": 19.199999999999996,
+            "commanded": 19.199999999999996,
+            "tip": [
+              -0.45951045794992984,
+              5.388627464647924,
+              1.1793869940076014
+            ],
+            "tipSpeed": 0.007763381981547616,
+            "maxWallPenetration": 0.0000024745574543350024,
+            "maxSegmentLengthError": 0.00004430966048854512,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 27,
+            "deployed": 6.5,
+            "commanded": 6.5,
+            "tip": [
+              -3.1453117998379865,
+              -5.097103938833289,
+              0.4517188859527719
+            ],
+            "tipSpeed": 0.009678372372684972,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00032376667058972575,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 27,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": 10.814907970052179,
+          "maxCoveredInnerRho": 0.011283757933497608,
+          "innerClearance": 0.039999999999999994
+        }
+      },
+      "summary": {
+        "wireCommandMin": 8.4,
+        "wireCommandMax": 19.199999999999996,
+        "wireActualMin": 8.392000000625849,
+        "wireActualMax": 19.199999999999996,
+        "sheathCommandMin": 6.5,
+        "sheathCommandMax": 6.5,
+        "sheathActualMin": 6.5,
+        "sheathActualMax": 6.5,
+        "wireTipYMin": -3.457071219589721,
+        "wireTipYMax": 5.388627464647924,
+        "wireMaxPen": 0.00017161311112096067,
+        "sheathMaxPen": 0.0002972942512516896,
+        "wireMaxSegErr": 0.06769561006724553,
+        "sheathMaxSegErr": 0.0007356904850678025,
+        "wireMaxTipSpeed": 37.78474070633964,
+        "sheathMaxTipSpeed": 0.6531248809462588,
+        "coaxMaxLoad": 0.0010604705273956462,
+        "coaxMaxContacts": 27,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.037804967622002784,
+        "wireExitPastOuterTipMin": 1.736094746254732,
+        "wireExitPastOuterTipMax": 10.837477308316744,
+        "wireExitPastOuterTipFinal": 10.814907970052179,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    },
+    {
+      "name": "reset-rebuild",
+      "frames": 179,
+      "final": {
+        "frame": 179,
+        "time": 1.4916999999880762,
+        "dt": 0.007399999976158142,
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 8,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 6.5,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 8,
+          "tipToTarget": 17.336687933183924,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 33,
+            "deployed": 8,
+            "commanded": 8,
+            "tip": [
+              -2.4060803623407283,
+              -3.6915105452417074,
+              0.2180011775636302
+            ],
+            "tipSpeed": 0.0063760108122639814,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00004125694454520934,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 27,
+            "deployed": 6.5,
+            "commanded": 6.5,
+            "tip": [
+              -2.903857760698684,
+              -5.102447862493711,
+              0.14683000641421604
+            ],
+            "tipSpeed": 0.007522535186720588,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.0005362893387740597,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 27,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": 1.4943550420894984,
+          "maxCoveredInnerRho": 0.0035493783582364663,
+          "innerClearance": 0.039999999999999994
+        }
+      },
+      "summary": {
+        "wireCommandMin": 8,
+        "wireCommandMax": 8,
+        "wireActualMin": 8,
+        "wireActualMax": 8,
+        "sheathCommandMin": 6.5,
+        "sheathCommandMax": 6.5,
+        "sheathActualMin": 6.5,
+        "sheathActualMax": 6.5,
+        "wireTipYMin": -3.695380555290118,
+        "wireTipYMax": -3.6791223385668688,
+        "wireMaxPen": 0,
+        "sheathMaxPen": 0,
+        "wireMaxSegErr": 0.0037896034787153754,
+        "sheathMaxSegErr": 0.0081501209424234,
+        "wireMaxTipSpeed": 0.5535622582523025,
+        "sheathMaxTipSpeed": 0.5820089886561501,
+        "coaxMaxLoad": 0,
+        "coaxMaxContacts": 27,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.043284954521030004,
+        "wireExitPastOuterTipMin": 1.4924786669151422,
+        "wireExitPastOuterTipMax": 1.5044003482550992,
+        "wireExitPastOuterTipFinal": 1.4943550420894984,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    },
+    {
+      "name": "sheath-forward-8x-arrowup",
+      "frames": 402,
+      "final": {
+        "frame": 581,
+        "time": 4.84240000000595,
+        "dt": 0.008099999994039535,
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 8,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 9.700000000000003,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 8,
+          "tipToTarget": 17.304206994369544,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 33,
+            "deployed": 8,
+            "commanded": 8,
+            "tip": [
+              -2.6090890118885537,
+              -3.63147623844685,
+              0.22001088394986193
+            ],
+            "tipSpeed": 0.004935552372876741,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.000025226590070509536,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 39,
+            "deployed": 9.700000000000003,
+            "commanded": 9.700000000000003,
+            "tip": [
+              -2.1082690495174643,
+              -2.217566638315737,
+              0.27020908891052353
+            ],
+            "tipSpeed": 0.0056787014375806,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00008593988163468902,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 32,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": -1.5008033705708828,
+          "maxCoveredInnerRho": 0.0007821423442345171,
+          "innerClearance": 0.039999999999999994
+        }
+      },
+      "summary": {
+        "wireCommandMin": 8,
+        "wireCommandMax": 8,
+        "wireActualMin": 8,
+        "wireActualMax": 8,
+        "sheathCommandMin": 6.9,
+        "sheathCommandMax": 9.700000000000003,
+        "sheathActualMin": 6.7,
+        "sheathActualMax": 9.700000000000003,
+        "wireTipYMin": -3.6915049517878886,
+        "wireTipYMax": -3.63147623844685,
+        "wireMaxPen": 0,
+        "sheathMaxPen": 0,
+        "wireMaxSegErr": 0.00019780813224684612,
+        "sheathMaxSegErr": 0.14128998754621103,
+        "wireMaxTipSpeed": 0.7040585218647598,
+        "sheathMaxTipSpeed": 52.08381710706764,
+        "coaxMaxLoad": 0,
+        "coaxMaxContacts": 32,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.014968227477262909,
+        "wireExitPastOuterTipMin": -1.5026104472863306,
+        "wireExitPastOuterTipMax": 1.4943473601706443,
+        "wireExitPastOuterTipFinal": -1.5008033705708828,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    }
+  ]
+}

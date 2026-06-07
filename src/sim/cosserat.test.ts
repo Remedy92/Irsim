@@ -80,6 +80,12 @@ function allFinite(rod: CosseratRod): boolean {
   return true;
 }
 
+function maxNodeDisplacement(from: Vector3[], rod: CosseratRod): number {
+  let max = 0;
+  for (let i = 0; i < Math.min(from.length, rod.x.length); i++) max = Math.max(max, from[i].distanceTo(rod.x[i]));
+  return max;
+}
+
 describe("CosseratRod", () => {
   it("stays finite and stable over many steps", () => {
     const rod = new CosseratRod(freeTube(), "a");
@@ -552,12 +558,12 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
     const outerMoved = outer.tip().distanceTo(outerTip0);
 
     // the WIRE advanced substantially (it slid freely through the sheath + out the open portal).
-    // With the two-way coax coupling (outerMassScale > 0) the wire carries a realistic sliding
-    // friction against the sheath, so it advances a little less freely than the idealized one-way
-    // case — still a large free slide, not a lock.
+    // The catheter applies radial containment + sliding friction, but there is no axial distance
+    // tie — this is a large free slide, not a rigid lock.
     expect(innerMoved).toBeGreaterThan(8);
     // the SHEATH barely moved relative to the wire — no rigid lock dragging it along (NO axial
-    // tie). It may be nudged a little by the now-bilateral lateral support, but ≪ the wire's slide.
+    // tie). The shipped radial support treats the catheter as the cylinder, so sheath slide stays ≪
+    // the wire's slide.
     expect(outerMoved).toBeLessThan(1.5);
     expect(outerMoved).toBeLessThan(0.25 * innerMoved); // sheath slide ≪ wire slide (free, not locked)
     // the wire tip is now WELL PAST the sheath tip (it exited the portal, not blocked at it)
@@ -595,8 +601,8 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
   it("LATERAL SUPPORT: the overlapped wire stays contained by the sheath and the support is load-bearing", () => {
     // Over-feed a long wire into a SHORT wide tube while a sheath covers the y∈[1,9] band. The
     // sheath's inner-in-outer containment must keep the overlapped wire inside the sheath lumen and
-    // carry a real two-way normal load at some point during the over-feed — emergent catheter-over-
-    // wire support, no hand-coded tie. NOTE we assert robust, deterministic properties (containment +
+    // carry a real normal load at some point during the over-feed — emergent catheter-over-wire
+    // support, no hand-coded tie. NOTE we assert robust, deterministic properties (containment +
     // peak load + stability), NOT a solo-vs-coax buckling-magnitude ratio: free buckling is a
     // bifurcation and its magnitude is chaotic (hypersensitive to tiny solver changes), so a
     // magnitude comparison is not a reliable regression.
@@ -614,10 +620,10 @@ describe("CoaxialAssembly — sheath over wire (Stage 5)", () => {
 
     // The relevant invariant is relative: the covered guidewire stays inside the sheath channel
     // instead of following an independent vessel path. The absolute vessel-frame bow can be large
-    // because the sheath itself is allowed to bow.
+    // because the catheter channel is still solved as contact/friction, not as a merged centerline.
     expect(maxOverlapRho(inner, outer)).toBeLessThan(0.25);
     expect(allFinite(inner) && allFinite(outer)).toBe(true);
-    // the coax containment is load-bearing at some point (the two-way support actually engaged)
+    // the coax containment is load-bearing at some point (catheter wall support actually engaged)
     expect(peakLoad).toBeGreaterThan(1e-6);
   });
 
@@ -652,8 +658,8 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
   /** Build the assembly exactly as Viewport.tsx does (default right-femoral access). */
   function buildAppAssembly(accessId = "rcfa"): CoaxialAssembly {
     const anatomy = buildNormalAnatomy();
-    const inner = new CosseratRod(anatomy, accessId, SHIPPED_GUIDEWIRE);
-    const outer = new CosseratRod(anatomy, accessId, SHIPPED_SHEATH);
+    const inner = new CosseratRod(anatomy, accessId, SHIPPED_GUIDEWIRE, { deployed: 8, steer: 0.35, torque: 0 });
+    const outer = new CosseratRod(anatomy, accessId, SHIPPED_SHEATH, { deployed: 6.5, steer: 0, torque: 0 });
     return new CoaxialAssembly(outer, inner);
   }
 
@@ -670,7 +676,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     deployed: number,
     steer: number,
     torque: number,
-    sheathDeployed = 5,
+    sheathDeployed = 6.5,
     sheathTorque = 0
   ): void {
     asm.inner.input.deployed = deployed;
@@ -680,6 +686,73 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     asm.outer.input.steer = 0;
     asm.outer.input.torque = sheathTorque;
   }
+
+  it("starts the shipped app assembly inside the access vessel without a large settling impulse", () => {
+    const asm = buildAppAssembly();
+    applyStoreInput(asm, 8, 0.35, 0, 6.5);
+    const inner0 = asm.inner.x.map((p) => p.clone());
+    const outer0 = asm.outer.x.map((p) => p.clone());
+
+    expect(asm.inner.maxWallPenetration()).toBe(0);
+    expect(asm.outer.maxWallPenetration()).toBe(0);
+
+    for (let i = 0; i < 120; i++) asm.step(1 / 60);
+
+    expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
+    expect(asm.inner.maxWallPenetration()).toBeLessThanOrEqual(0.05);
+    expect(asm.outer.maxWallPenetration()).toBeLessThanOrEqual(0.05);
+    expect(maxNodeDisplacement(inner0, asm.inner)).toBeLessThan(1);
+    expect(maxNodeDisplacement(outer0, asm.outer)).toBeLessThan(1);
+  }, 20000);
+
+  it("advancing the shipped guidewire from app defaults stays contained without stretch spikes", () => {
+    const asm = buildAppAssembly();
+    applyStoreInput(asm, 8, 0.35, 0, 6.5);
+    for (let i = 0; i < 120; i++) asm.step(1 / 60);
+
+    applyStoreInput(asm, 16, 0.35, 0, 6.5);
+    let maxWirePen = 0;
+    let maxSheathPen = 0;
+    let maxWireSegErr = 0;
+    let maxSheathSegErr = 0;
+    for (let i = 0; i < 240; i++) {
+      asm.step(1 / 60);
+      maxWirePen = Math.max(maxWirePen, asm.inner.maxWallPenetration());
+      maxSheathPen = Math.max(maxSheathPen, asm.outer.maxWallPenetration());
+      for (let s = 0; s < asm.inner.restLen.length; s++) {
+        maxWireSegErr = Math.max(
+          maxWireSegErr,
+          Math.abs(asm.inner.x[s + 1].distanceTo(asm.inner.x[s]) - asm.inner.restLen[s])
+        );
+      }
+      for (let s = 0; s < asm.outer.restLen.length; s++) {
+        maxSheathSegErr = Math.max(
+          maxSheathSegErr,
+          Math.abs(asm.outer.x[s + 1].distanceTo(asm.outer.x[s]) - asm.outer.restLen[s])
+        );
+      }
+    }
+
+    expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
+    expect(asm.inner.deployedLength()).toBeCloseTo(16, 1);
+    expect(maxWirePen).toBeLessThanOrEqual(0.05);
+    expect(maxSheathPen).toBeLessThanOrEqual(0.05);
+    expect(maxWireSegErr).toBeLessThan(0.15);
+    expect(maxSheathSegErr).toBeLessThan(0.15);
+  }, 30000);
+
+  it("feeds the guidewire from inside the catheter cylinder and out through the catheter tip", () => {
+    const asm = buildAppAssembly();
+    applyStoreInput(asm, 8, 0.35, 0, 6.5);
+    for (let i = 0; i < 120; i++) asm.step(1 / 60);
+
+    applyStoreInput(asm, 19.2, 0.35, 0, 6.5);
+    for (let i = 0; i < 360; i++) asm.step(1 / 60);
+
+    expect(asm.innerExitPastOuterTip()).toBeGreaterThan(3);
+    expect(asm.maxCoveredInnerRho()).toBeLessThanOrEqual(asm.innerClearance() + 0.02);
+    expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
+  }, 30000);
 
   it("advances the guidewire into the anatomy as the store deployed length increases", () => {
     const asm = buildAppAssembly();
@@ -804,7 +877,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     expect(asm.inner.deployedLength()).toBeGreaterThan(depth0 + 6); // material fed in
     expect(asm.inner.n).toBeGreaterThanOrEqual(3);
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
-  });
+  }, 20000);
 
   // KNOWN FAILURE — pre-existing solver chirality bug. A solo Cosserat rod navigates a vessel that
   // curves to the patient's right (the right iliac) far better than its mirror image (the left

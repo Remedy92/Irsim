@@ -3,6 +3,21 @@ import type { MaterialField, MaterialProfile } from "../material";
 import { assembleMass, LumpedMass } from "./mass";
 import { ElemMat } from "./element";
 
+const _bridgeTarget = new Quaternion();
+
+function alignTo(reference: Quaternion, q: Quaternion, out: Quaternion): Quaternion {
+  out.copy(q);
+  if (reference.x * q.x + reference.y * q.y + reference.z * q.z + reference.w * q.w < 0) {
+    out.set(-q.x, -q.y, -q.z, -q.w);
+  }
+  return out;
+}
+
+function slerpShortest(a: Quaternion, b: Quaternion, t: number, out: Quaternion): Quaternion {
+  alignTo(a, b, _bridgeTarget);
+  return out.copy(a).slerp(_bridgeTarget, t).normalize();
+}
+
 /**
  * Adapter between the existing Cosserat rod's per-segment MaterialField (compliances) and the dynamic
  * co-rotational beam's per-element ElemMat (rigidities) + lumped mass + nodal frames
@@ -75,22 +90,27 @@ export function buildLumpedMassForRod(
 }
 
 /**
- * Build n NODAL frames from n−1 SEGMENT frames: interior node i = shortest-arc midpoint slerp of its
- * two bracketing segments; the end nodes take their single adjacent segment frame. Reflection-stable.
+ * Build n NODAL frames from n−1 SEGMENT frames. Segment frames are element-midpoint samples; nodal
+ * frames are boundary samples reconstructed so that midpointing node j,j+1 recovers segment j for a
+ * smooth twist field. This avoids turning segment↔nodal bridging into a low-pass filter that bleeds
+ * torsional gradients every direct-beam substep.
  */
 export function nodalFramesFromSegments(segQ: Quaternion[], out?: Quaternion[]): Quaternion[] {
   const segs = segQ.length;
   const n = segs + 1;
   const arr = out ?? Array.from({ length: n }, () => new Quaternion());
   if (arr.length !== n) arr.length = n;
-  arr[0] = (arr[0] ?? new Quaternion()).copy(segQ[0]);
-  arr[n - 1] = (arr[n - 1] ?? new Quaternion()).copy(segQ[segs - 1]);
-  for (let i = 1; i < n - 1; i++) {
-    const a = segQ[i - 1];
-    const b = segQ[i];
-    const bAligned = (arr[i] ?? new Quaternion()).copy(b);
-    if (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0) bAligned.set(-b.x, -b.y, -b.z, -b.w);
-    arr[i] = (arr[i] ?? new Quaternion()).copy(a).slerp(bAligned, 0.5);
+  if (segs === 0) return arr;
+  if (segs === 1) {
+    arr[0] = (arr[0] ?? new Quaternion()).copy(segQ[0]);
+    arr[1] = (arr[1] ?? new Quaternion()).copy(segQ[0]);
+    return arr;
+  }
+  // Back-extrapolate half a segment from the first two midpoint frames to get the proximal boundary.
+  arr[0] = slerpShortest(segQ[0], segQ[1], -0.5, arr[0] ?? new Quaternion());
+  for (let j = 0; j < segs; j++) {
+    // Choose node j+1 so midpoint(node j, node j+1) is segment j.
+    arr[j + 1] = slerpShortest(arr[j], segQ[j], 2, arr[j + 1] ?? new Quaternion());
   }
   return arr;
 }
@@ -104,9 +124,7 @@ export function segmentFramesFromNodal(nodeQ: Quaternion[], out?: Quaternion[]):
   for (let j = 0; j < segs; j++) {
     const a = nodeQ[j];
     const b = nodeQ[j + 1];
-    const bAligned = (arr[j] ?? new Quaternion()).copy(b);
-    if (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0) bAligned.set(-b.x, -b.y, -b.z, -b.w);
-    arr[j] = (arr[j] ?? new Quaternion()).copy(a).slerp(bAligned, 0.5);
+    arr[j] = slerpShortest(a, b, 0.5, arr[j] ?? new Quaternion());
   }
   return arr;
 }

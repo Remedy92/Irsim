@@ -17,6 +17,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "browser:physics": "node scripts/browser-physics-smoke.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

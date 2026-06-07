@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
-import { CosseratRod, SHIPPED_GUIDEWIRE } from "./cosserat";
+import { CosseratRod, GUIDEWIRE_DIRECT } from "./cosserat";
 
 /** The dynamic co-rotational beam SHIPPING config (coarser h=0.5) — what the calibrated gates validate. */
-const DIRECT = SHIPPED_GUIDEWIRE;
+const DIRECT = GUIDEWIRE_DIRECT;
 import { buildNormalAnatomy } from "./anatomy";
 import type { Anatomy } from "./types";
 

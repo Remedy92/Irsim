@@ -5,6 +5,11 @@ import { useSim } from "./sim/store";
 import { Viewport } from "./three/Viewport";
 import "./styles.css";
 
+const KEY_FEED_STEP_CM = 0.4;
+const BUTTON_FEED_STEP_CM = 1;
+const KEY_TORQUE_STEP_RAD = 0.12;
+const BUTTON_TORQUE_STEP_RAD = 0.2;
+
 function Segmented() {
   const view = useSim((s) => s.view);
   const set = useSim((s) => s.set);
@@ -175,8 +180,8 @@ export function App() {
       e.preventDefault();
       switch (action.type) {
         case "device":
-          if (action.control === "feed") st.advance(action.device, action.sign * 0.8);
-          else st.rotate(action.device, action.sign * 0.18);
+          if (action.control === "feed") st.advance(action.device, action.sign * KEY_FEED_STEP_CM);
+          else st.rotate(action.device, action.sign * KEY_TORQUE_STEP_RAD);
           break;
         case "view":
           st.set({ view: st.view === "3d" ? "fluoro" : "3d" });
@@ -326,20 +331,20 @@ export function App() {
           glyphs={hints.wire}
           active={selected === "wire"}
           onSelect={() => select("wire")}
-          onAdvance={() => advance("wire", 2)}
-          onRetract={() => advance("wire", -2)}
-          onTorqueMinus={() => rotate("wire", -0.3)}
-          onTorquePlus={() => rotate("wire", 0.3)}
+          onAdvance={() => advance("wire", BUTTON_FEED_STEP_CM)}
+          onRetract={() => advance("wire", -BUTTON_FEED_STEP_CM)}
+          onTorqueMinus={() => rotate("wire", -BUTTON_TORQUE_STEP_RAD)}
+          onTorquePlus={() => rotate("wire", BUTTON_TORQUE_STEP_RAD)}
         />
         <DeviceDeck
           name="Sheath"
           glyphs={hints.sheath}
           active={selected === "sheath"}
           onSelect={() => select("sheath")}
-          onAdvance={() => advance("sheath", 2)}
-          onRetract={() => advance("sheath", -2)}
-          onTorqueMinus={() => rotate("sheath", -0.3)}
-          onTorquePlus={() => rotate("sheath", 0.3)}
+          onAdvance={() => advance("sheath", BUTTON_FEED_STEP_CM)}
+          onRetract={() => advance("sheath", -BUTTON_FEED_STEP_CM)}
+          onTorqueMinus={() => rotate("sheath", -BUTTON_TORQUE_STEP_RAD)}
+          onTorquePlus={() => rotate("sheath", BUTTON_TORQUE_STEP_RAD)}
         />
 
         <div className="deck-globals">

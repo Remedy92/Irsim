@@ -24,15 +24,74 @@ import {
 } from "three";
 import { buildNormalAnatomy } from "../sim/anatomy";
 import { CoaxialAssembly, CosseratRod, SHIPPED_GUIDEWIRE, SHIPPED_SHEATH } from "../sim/cosserat";
+import type { DeviceId } from "../sim/store";
 import { useSim } from "../sim/store";
 import { makeAttenuationMaterial, makeTonemapMaterial } from "./fluoro";
 
 const ISO = new Vector3(0, 14, 0);
+const DEBUG_HISTORY_LIMIT = 900;
 
 interface MeshMaterials {
   mat3d: Material;
   fluoro: ShaderMaterial;
   atten: number;
+}
+
+interface RodDebug {
+  nodes: number;
+  deployed: number;
+  commanded: number;
+  tip: [number, number, number];
+  tipSpeed: number;
+  maxWallPenetration: number;
+  maxSegmentLengthError: number;
+  finite: boolean;
+}
+
+interface SimDebugSnapshot {
+  frame: number;
+  time: number;
+  dt: number;
+  view: string;
+  accessId: string;
+  selected: string;
+  targetId: string;
+  inputs: {
+    wire: { deployed: number; torque: number; steer: number };
+    sheath: { deployed: number; torque: number; steer: number };
+  };
+  metrics: {
+    depth: number;
+    tipToTarget: number;
+    reached: boolean;
+    contrast: number;
+  };
+  rods: {
+    wire: RodDebug;
+    sheath: RodDebug;
+  };
+  coax: {
+    activeContacts: number;
+    normalLoad: number;
+    innerExitPastOuterTip: number;
+    maxCoveredInnerRho: number;
+    innerClearance: number;
+  };
+}
+
+interface SimDebugApi {
+  getSnapshot: () => SimDebugSnapshot | null;
+  getHistory: () => SimDebugSnapshot[];
+  clearHistory: () => void;
+  advance: (device: DeviceId, deltaCm: number) => void;
+  setInput: (device: DeviceId, patch: Partial<{ deployed: number; torque: number; steer: number }>) => void;
+  reset: () => void;
+}
+
+declare global {
+  interface Window {
+    __IRSIM_DEBUG__?: SimDebugApi;
+  }
 }
 
 /**
@@ -55,6 +114,40 @@ function rebuildTube(mesh: Mesh, nodes: Vector3[], radius: number): void {
   mesh.geometry = new TubeGeometry(curve, Math.max(1, pts.length), radius, 6, false);
 }
 
+function tuple(p: Vector3): [number, number, number] {
+  return [p.x, p.y, p.z];
+}
+
+function allFiniteRod(rod: CosseratRod): boolean {
+  for (const p of rod.x) if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return false;
+  for (const q of rod.q) if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || !Number.isFinite(q.z) || !Number.isFinite(q.w)) return false;
+  return true;
+}
+
+function maxSegmentLengthError(rod: CosseratRod): number {
+  let max = 0;
+  for (let i = 0; i < rod.restLen.length; i++) {
+    max = Math.max(max, Math.abs(rod.x[i + 1].distanceTo(rod.x[i]) - rod.restLen[i]));
+  }
+  return max;
+}
+
+function rodDebug(rod: CosseratRod, commanded: number, prevTip: Vector3, dt: number): RodDebug {
+  const tip = rod.tip();
+  const speed = dt > 0 ? tip.distanceTo(prevTip) / dt : 0;
+  prevTip.copy(tip);
+  return {
+    nodes: rod.n,
+    deployed: rod.deployedLength(),
+    commanded,
+    tip: tuple(tip),
+    tipSpeed: speed,
+    maxWallPenetration: rod.maxWallPenetration(),
+    maxSegmentLengthError: maxSegmentLengthError(rod),
+    finite: allFiniteRod(rod)
+  };
+}
+
 function Engine() {
   const gl = useThree((s) => s.gl);
   const size = useThree((s) => s.size);
@@ -64,6 +157,7 @@ function Engine() {
   // The chosen access side (right/left common femoral). Reactive so picking a different start
   // rebuilds the instruments at that artery.
   const accessId = useSim((s) => s.accessId);
+  const runSeq = useSim((s) => s.runSeq);
 
   // New Cosserat-XPBD instruments: a guidewire (inner) sliding inside a sheath (outer), both
   // entering at the selected femoral access. The wire and sheath are driven independently (see
@@ -71,11 +165,12 @@ function Engine() {
   // choose vessel-wall contacts/branches until it exits the sheath portal. Replaces legacy rod.ts.
   const assembly = useMemo(() => {
     const startId = anatomy.access.some((a) => a.id === accessId) ? accessId : anatomy.access[0].id;
+    const st = useSim.getState();
     // Shipped presets live in cosserat.ts so the app and integration tests exercise the same path.
-    const inner = new CosseratRod(anatomy, startId, SHIPPED_GUIDEWIRE);
-    const outer = new CosseratRod(anatomy, startId, SHIPPED_SHEATH);
+    const inner = new CosseratRod(anatomy, startId, SHIPPED_GUIDEWIRE, st.wire);
+    const outer = new CosseratRod(anatomy, startId, SHIPPED_SHEATH, st.sheath);
     return new CoaxialAssembly(outer, inner);
-  }, [anatomy, accessId]);
+  }, [anatomy, accessId, runSeq]);
 
   const rig = useMemo(() => {
     const scene = new Scene();
@@ -166,6 +261,45 @@ function Engine() {
   const reachedFor = useRef(0);
   const clock = useRef(0);
   const reportAt = useRef(0);
+  const frame = useRef(0);
+  const debugHistory = useRef<SimDebugSnapshot[]>([]);
+  const debugSnapshot = useRef<SimDebugSnapshot | null>(null);
+  const prevWireTip = useRef(assembly.inner.tip().clone());
+  const prevSheathTip = useRef(assembly.outer.tip().clone());
+
+  useEffect(() => {
+    clock.current = 0;
+    reportAt.current = 0;
+    reachedFor.current = 0;
+    contrast.current = 0;
+    frame.current = 0;
+    debugHistory.current.length = 0;
+    debugSnapshot.current = null;
+    prevWireTip.current.copy(assembly.inner.tip());
+    prevSheathTip.current.copy(assembly.outer.tip());
+  }, [assembly]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const api: SimDebugApi = {
+      getSnapshot: () => debugSnapshot.current,
+      getHistory: () => debugHistory.current.slice(),
+      clearHistory: () => {
+        debugHistory.current.length = 0;
+      },
+      advance: (device, deltaCm) => useSim.getState().advance(device, deltaCm),
+      setInput: (device, patch) => {
+        const st = useSim.getState();
+        const current = st[device];
+        st.set(device === "wire" ? { wire: { ...current, ...patch } } : { sheath: { ...current, ...patch } });
+      },
+      reset: () => useSim.getState().reset()
+    };
+    window.__IRSIM_DEBUG__ = api;
+    return () => {
+      if (window.__IRSIM_DEBUG__ === api) delete window.__IRSIM_DEBUG__;
+    };
+  }, []);
 
   useEffect(() => {
     const dpr = Math.min(window.devicePixelRatio, 2);
@@ -242,6 +376,7 @@ function Engine() {
     outer.input.steer = 0;
     outer.input.torque = s.sheath.torque;
     if (h > 0) assembly.step(h);
+    frame.current += 1;
 
     // contrast injection ramp/decay
     if (s.injectSeq !== lastSeq.current) {
@@ -309,6 +444,42 @@ function Engine() {
         reached: reachedFor.current > 0.4,
         contrast: contrast.current
       });
+    }
+
+    const snapshot: SimDebugSnapshot = {
+      frame: frame.current,
+      time: clock.current,
+      dt: h,
+      view: s.view,
+      accessId: s.accessId,
+      selected: s.selected,
+      targetId: s.targetId,
+      inputs: {
+        wire: { deployed: s.wire.deployed, torque: s.wire.torque, steer: s.wire.steer },
+        sheath: { deployed: s.sheath.deployed, torque: s.sheath.torque, steer: s.sheath.steer }
+      },
+      metrics: {
+        depth: inner.deployedLength(),
+        tipToTarget,
+        reached: reachedFor.current > 0.4,
+        contrast: contrast.current
+      },
+      rods: {
+        wire: rodDebug(inner, s.wire.deployed, prevWireTip.current, h),
+        sheath: rodDebug(outer, s.sheath.deployed, prevSheathTip.current, h)
+      },
+      coax: {
+        activeContacts: assembly.activeCoaxCount(),
+        normalLoad: assembly.coaxNormalLoad(),
+        innerExitPastOuterTip: assembly.innerExitPastOuterTip(),
+        maxCoveredInnerRho: assembly.maxCoveredInnerRho(),
+        innerClearance: assembly.innerClearance()
+      }
+    };
+    debugSnapshot.current = snapshot;
+    debugHistory.current.push(snapshot);
+    if (debugHistory.current.length > DEBUG_HISTORY_LIMIT) {
+      debugHistory.current.splice(0, debugHistory.current.length - DEBUG_HISTORY_LIMIT);
     }
   }, 1);
 

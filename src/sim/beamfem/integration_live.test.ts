@@ -4,8 +4,8 @@ import {
   CoaxialAssembly,
   CosseratRod,
   GUIDEWIRE,
-  SHIPPED_GUIDEWIRE,
-  SHIPPED_SHEATH
+  GUIDEWIRE_DIRECT,
+  SHEATH_DIRECT
 } from "../cosserat";
 import { buildNormalAnatomy } from "../anatomy";
 import type { Anatomy } from "../types";
@@ -47,7 +47,7 @@ function assertContained(label: string, rod: CosseratRod, epsCm = 0.05): void {
 
 describe("Phase-3 live integration — direct solve path", () => {
   function climbRun(useDirectSolve: boolean): { climb: number; finite: boolean; n: number } {
-    const rod = new CosseratRod(tube(0.55, 26), "a", useDirectSolve ? SHIPPED_GUIDEWIRE : GUIDEWIRE);
+    const rod = new CosseratRod(tube(0.55, 26), "a", useDirectSolve ? GUIDEWIRE_DIRECT : GUIDEWIRE);
     const start = rod.tip().y; // ~ -2 + 8cm initial deploy
     rod.input = { deployed: 22, steer: 0.3, torque: 0 }; // feed +14cm of material
     for (let i = 0; i < 500; i++) rod.step(1 / 60);
@@ -70,7 +70,7 @@ describe("Phase-3 live integration — direct solve path", () => {
   }, 60000);
 
   it("flag-ON: stays bounded inside the tube (no tunneling / blowup) over a long run", () => {
-    const rod = new CosseratRod(tube(0.55, 18), "a", SHIPPED_GUIDEWIRE);
+    const rod = new CosseratRod(tube(0.55, 18), "a", GUIDEWIRE_DIRECT);
     rod.input = { deployed: 14, steer: 0.3, torque: 0 };
     for (let i = 0; i < 600; i++) rod.step(1 / 60);
     expect(allFinite(rod)).toBe(true);
@@ -83,8 +83,8 @@ describe("Phase-3 live integration — direct solve path", () => {
 
 describe("Phase-3 live integration — coaxial telescoping on the direct beam (#2)", () => {
   it("the wire slides freely out of the held sheath (telescopes), both rods on the dynamic beam", () => {
-    const outer = new CosseratRod(tube(0.55, 48), "a", SHIPPED_SHEATH);
-    const inner = new CosseratRod(tube(0.55, 48), "a", SHIPPED_GUIDEWIRE);
+    const outer = new CosseratRod(tube(0.55, 48), "a", SHEATH_DIRECT);
+    const inner = new CosseratRod(tube(0.55, 48), "a", GUIDEWIRE_DIRECT);
     const asm = new CoaxialAssembly(outer, inner);
     asm.setOuterInput(15, 0, 0);
     asm.setInnerInput(10, 0, 0);
@@ -103,8 +103,8 @@ describe("Phase-3 live integration — coaxial telescoping on the direct beam (#
 
   it("RED BASELINE: shipped direct coax stays inside the curved anatomy envelope", () => {
     const anatomy = buildNormalAnatomy();
-    const outer = new CosseratRod(anatomy, "rcfa", SHIPPED_SHEATH);
-    const inner = new CosseratRod(anatomy, "rcfa", SHIPPED_GUIDEWIRE);
+    const outer = new CosseratRod(anatomy, "rcfa", SHEATH_DIRECT);
+    const inner = new CosseratRod(anatomy, "rcfa", GUIDEWIRE_DIRECT);
     const asm = new CoaxialAssembly(outer, inner);
     asm.setOuterInput(12, 0, 0);
     asm.setInnerInput(26, 0.45, 0.6);
@@ -116,8 +116,8 @@ describe("Phase-3 live integration — coaxial telescoping on the direct beam (#
 
   it("counts numerical-tangent work for one shipped direct coax frame", () => {
     const anatomy = buildNormalAnatomy();
-    const outer = new CosseratRod(anatomy, "rcfa", SHIPPED_SHEATH);
-    const inner = new CosseratRod(anatomy, "rcfa", SHIPPED_GUIDEWIRE);
+    const outer = new CosseratRod(anatomy, "rcfa", SHEATH_DIRECT);
+    const inner = new CosseratRod(anatomy, "rcfa", GUIDEWIRE_DIRECT);
     const asm = new CoaxialAssembly(outer, inner);
     asm.setOuterInput(outer.deployedLength(), 0, 0);
     asm.setInnerInput(inner.deployedLength(), 0, 0);

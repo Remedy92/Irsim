@@ -29,6 +29,8 @@ interface SimState {
   /** Vascular access site id (e.g. "rcfa" right / "lcfa" left common femoral). Choosing the
    * start side rebuilds the instruments at that femoral artery. */
   accessId: string;
+  /** Bumped whenever the current run should be rebuilt from fresh device seeds. */
+  runSeq: number;
 
   // Two independently-controlled coaxial instruments.
   wire: DeviceState;
@@ -76,6 +78,7 @@ const DEFAULTS = {
   rao: 0,
   cranial: 0,
   accessId: "rcfa",
+  runSeq: 0,
   selected: "wire" as DeviceId,
   layout: "qwerty" as KeyLayout,
   injectSeq: 0,
@@ -93,7 +96,8 @@ export const useSim = create<SimState>((set) => ({
 
   // Changing the access side restarts the run there (the rods are reseeded at that femoral
   // artery in the Viewport); keep chrome (view, layout, C-arm, target) but reset device pose.
-  setAccess: (accessId) => set({ accessId, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() }),
+  setAccess: (accessId) =>
+    set((s) => ({ accessId, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
 
   select: (device) => set({ selected: device }),
   setLayout: (layout) => set({ layout }),
@@ -126,6 +130,7 @@ export const useSim = create<SimState>((set) => ({
   reset: () =>
     set((s) => ({
       ...DEFAULTS,
+      runSeq: s.runSeq + 1,
       accessId: s.accessId,
       layout: s.layout,
       ...freshDevices(),
