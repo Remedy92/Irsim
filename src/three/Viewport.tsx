@@ -30,6 +30,7 @@ import { makeAttenuationMaterial, makeTonemapMaterial } from "./fluoro";
 
 const ISO = new Vector3(0, 14, 0);
 const DEBUG_HISTORY_LIMIT = 900;
+type PhysicsMode = "direct";
 
 interface MeshMaterials {
   mat3d: Material;
@@ -52,6 +53,7 @@ interface SimDebugSnapshot {
   frame: number;
   time: number;
   dt: number;
+  physicsMode: PhysicsMode;
   view: string;
   accessId: string;
   selected: string;
@@ -76,6 +78,17 @@ interface SimDebugSnapshot {
     innerExitPastOuterTip: number;
     maxCoveredInnerRho: number;
     innerClearance: number;
+  };
+  /**
+   * Phase F performance instrumentation (reported, never gated in CI — wall-clock flakes on
+   * shared runners). `stepMs` is last-frame `assembly.step()` wall time; the deterministic
+   * work-counts are the HARD gate (asserted in beamfem/integration_live.test.ts). All zero on the
+   * shipped XPBD lane (it assembles no FEM tangents); meaningful only on the direct beam lane.
+   */
+  perf: {
+    stepMs: number;
+    tangentAssemblies: number;
+    elementForceEvals: number;
   };
 }
 
@@ -153,6 +166,7 @@ function Engine() {
   const size = useThree((s) => s.size);
 
   const anatomy = useMemo(() => buildNormalAnatomy(), []);
+  const physicsMode: PhysicsMode = "direct";
 
   // The chosen access side (right/left common femoral). Reactive so picking a different start
   // rebuilds the instruments at that artery.
@@ -262,6 +276,12 @@ function Engine() {
   const clock = useRef(0);
   const reportAt = useRef(0);
   const frame = useRef(0);
+  // Phase F: last-frame step wall time (ms) + deterministic FEM work-counts for that frame.
+  const stepMs = useRef(0);
+  const stepCounts = useRef<{ tangentAssemblies: number; elementForceEvals: number }>({
+    tangentAssemblies: 0,
+    elementForceEvals: 0
+  });
   const debugHistory = useRef<SimDebugSnapshot[]>([]);
   const debugSnapshot = useRef<SimDebugSnapshot | null>(null);
   const prevWireTip = useRef(assembly.inner.tip().clone());
@@ -273,6 +293,8 @@ function Engine() {
     reachedFor.current = 0;
     contrast.current = 0;
     frame.current = 0;
+    stepMs.current = 0;
+    stepCounts.current = { tangentAssemblies: 0, elementForceEvals: 0 };
     debugHistory.current.length = 0;
     debugSnapshot.current = null;
     prevWireTip.current.copy(assembly.inner.tip());
@@ -375,7 +397,17 @@ function Engine() {
     outer.input.deployed = s.sheath.deployed;
     outer.input.steer = 0;
     outer.input.torque = s.sheath.torque;
-    if (h > 0) assembly.step(h);
+    // Phase F: time the elastic+contact step (reported, not gated). Reset the deterministic FEM
+    // work-counts immediately before so the post-step read reflects exactly this frame's tangent
+    // assemblies / element-force evals (the HARD CI gate lives in integration_live.test.ts). Two
+    // performance.now() calls/frame is negligible overhead and only runs when time elapsed (h > 0).
+    if (h > 0) {
+      assembly.resetDirectPerfCounters();
+      const t0 = performance.now();
+      assembly.step(h);
+      stepMs.current = performance.now() - t0;
+      stepCounts.current = assembly.directPerfCounters();
+    }
     frame.current += 1;
 
     // contrast injection ramp/decay
@@ -450,6 +482,7 @@ function Engine() {
       frame: frame.current,
       time: clock.current,
       dt: h,
+      physicsMode,
       view: s.view,
       accessId: s.accessId,
       selected: s.selected,
@@ -474,6 +507,11 @@ function Engine() {
         innerExitPastOuterTip: assembly.innerExitPastOuterTip(),
         maxCoveredInnerRho: assembly.maxCoveredInnerRho(),
         innerClearance: assembly.innerClearance()
+      },
+      perf: {
+        stepMs: stepMs.current,
+        tangentAssemblies: stepCounts.current.tangentAssemblies,
+        elementForceEvals: stepCounts.current.elementForceEvals
       }
     };
     debugSnapshot.current = snapshot;

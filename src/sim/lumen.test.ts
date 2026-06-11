@@ -66,6 +66,27 @@ function yBifurcation(r = 0.5): Anatomy {
   };
 }
 
+/** A trunk with a narrower side branch for branch-ownership tests near an ostium. */
+function narrowSideBranch(): Anatomy {
+  const main = [];
+  for (let i = 0; i <= 8; i++) main.push({ pos: new Vector3(0, i, 0), radius: 0.3, s: i });
+  const side = [
+    { pos: new Vector3(0, 5, 0), radius: 0.25, s: 0 },
+    { pos: new Vector3(-2, 7, 0), radius: 0.25, s: 2 }
+  ];
+  return {
+    id: "side",
+    name: "side",
+    branches: [
+      { id: "main", name: "main", attenuation: 1, points: main },
+      { id: "side", name: "side", attenuation: 1, points: side }
+    ],
+    access: [{ id: "a", name: "a", pos: new Vector3(0, 0, 0), dir: new Vector3(0, 1, 0), branchId: "main" }],
+    targets: [],
+    provenance: { source: "test", license: "test", note: "test" }
+  };
+}
+
 describe("Lumen implicit SDF", () => {
   it("φ sign is negative inside and positive outside the capsule lumen", () => {
     const lumen = new Lumen(straightTube(0.5));
@@ -173,6 +194,22 @@ describe("Lumen graph adjacency + branch hysteresis (no cross-carina snap)", () 
     }
     expect(switches).toBe(0);
     expect(lumen.edges[edge].branchId).toBe(startBranch);
+  });
+
+  it("does not switch into a side branch while the sample is still outside that branch lumen", () => {
+    const lumen = new Lumen(narrowSideBranch());
+    const q = freshQuery();
+    let edge = lumen.query(new Vector3(0, 4.8, 0), -1, q);
+    expect(lumen.edges[edge].branchId).toBe("main");
+
+    // Near the ostium and geometrically closer to the side branch than the trunk, but outside the
+    // side branch capsule. Ownership should remain on the current trunk edge until the sample
+    // actually enters the branch lumen.
+    edge = lumen.query(new Vector3(-0.45, 5.45, 0.35), edge, q);
+    expect(lumen.edges[edge].branchId).toBe("main");
+
+    edge = lumen.query(new Vector3(-0.25, 5.25, 0.05), edge, q);
+    expect(lumen.edges[edge].branchId).toBe("side");
   });
 
   it("re-acquires the nearest edge after a long jump (lost node fallback)", () => {

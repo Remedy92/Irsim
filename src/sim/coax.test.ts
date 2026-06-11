@@ -28,13 +28,17 @@ import {
 function mockRod(points: Vector3[], w = 1): NodeContactTarget {
   const q: Quaternion[] = [];
   for (let i = 0; i < Math.max(0, points.length - 1); i++) q.push(new Quaternion());
+  const invMass = points.map(() => w);
+  const invInertia = q.map(() => 1);
   return {
     x: points,
     prev: points.map((p) => p.clone()),
     q,
-    w: points.map(() => w),
-    wq: q.map(() => 1),
-    rodRadius: 0.05
+    w: invMass,
+    wq: invInertia,
+    rodRadius: 0.05,
+    invMassAt: (node) => invMass[node] ?? 0,
+    invInertiaAt: (node) => invInertia[Math.min(node, invInertia.length - 1)] ?? 0
   };
 }
 
@@ -71,6 +75,21 @@ describe("coax — closest outer segment pairing", () => {
 });
 
 describe("coax — inner-in-outer normal containment (bilateral)", () => {
+  it("uses inverse-mass accessors when distributing support to the outer endpoints", () => {
+    const outer = mockRod([new Vector3(0, 0, 0), new Vector3(0, 1, 0)]);
+    const inner = mockRod([new Vector3(0.2, 0.5, 0)]);
+    outer.w[0] = 0;
+    outer.w[1] = 0; // raw array says fixed; accessor still exposes the target mass metric
+    outer.invMassAt = (node) => (node === 0 || node === 1 ? 1 : 0);
+    const c = makeCoaxContact(0, 0, 0.04, 0.02, 0, 1e-9, 1e-9, 1e-9);
+    const outerMidBefore = 0.5 * (outer.x[0].x + outer.x[1].x);
+
+    solveCoaxialNormalContact(inner, outer, c, 0.1, 1, DT);
+
+    expect(0.5 * (outer.x[0].x + outer.x[1].x)).toBeGreaterThan(outerMidBefore);
+    expect(c.lambdaN).toBeGreaterThan(0);
+  });
+
   it("pushes the inner back inside the outer channel and supports the outer (3-body)", () => {
     // outer straight along +y; inner node poking out to +x beyond the channel
     const outer = mockRod([new Vector3(0, 0, 0), new Vector3(0, 1, 0)]);
@@ -177,6 +196,19 @@ describe("coax — soft lateral centering", () => {
     // inner pulled toward the axis (−x); outer pulled the opposite way (the bilateral share)
     expect(inner.x[0].x).toBeLessThan(innerBefore);
     expect(0.5 * (outer.x[0].x + outer.x[1].x)).toBeGreaterThan(outerMidBefore);
+  });
+
+  it("can be made one-way so direct coax centers the inner without dragging the outer", () => {
+    const outer = mockRod([new Vector3(0, 0, 0), new Vector3(0, 1, 0)]);
+    const inner = mockRod([new Vector3(0.3, 0.5, 0)]);
+    const c = makeCoaxContact(0, 0, 0.04, 0.02, 0, 1e-9, 1e-9, 1e-9);
+    const innerBefore = inner.x[0].x;
+    const outerMidBefore = 0.5 * (outer.x[0].x + outer.x[1].x);
+
+    solveCoaxialCentering(inner, outer, c, 0.5, 1, DT, 0);
+
+    expect(inner.x[0].x).toBeLessThan(innerBefore);
+    expect(0.5 * (outer.x[0].x + outer.x[1].x)).toBeCloseTo(outerMidBefore, 12);
   });
 
   it("is disabled by gain 0 or portal 0", () => {

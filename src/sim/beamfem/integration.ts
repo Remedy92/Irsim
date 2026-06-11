@@ -1,6 +1,6 @@
 import { Quaternion } from "three";
 import type { MaterialField, MaterialProfile } from "../material";
-import { assembleMass, LumpedMass } from "./mass";
+import { assembleMass, densityFromGramsPerCm3, LumpedMass } from "./mass";
 import { ElemMat } from "./element";
 
 const _bridgeTarget = new Quaternion();
@@ -69,24 +69,30 @@ export function kappa0ForElement(m: MaterialProfile, steer: number, out = new Qu
   return { x: m.restCurvature.x * s, y: m.restCurvature.y * s, z: m.restCurvature.z * s };
 }
 
-/** Lumped per-node mass/inertia from the rod's material + geometry, twist-conditioned (R*). */
+/**
+ * PHYSICAL lumped per-node mass/inertia from the rod's real section geometry × real material density
+ * (g/cm³ from each segment's MaterialProfile.density, converted ONCE to scene units), with the single
+ * GJ-DECOUPLED absolute conditioning `scale` (see beamfem/mass.ts header + cosserat.ts D_MASS_SCALE).
+ * This carries physical m/Jb/Jt RATIOS (wire↔sheath mobility, contact/coax inverse-mass metric) while
+ * keeping M/Δt² comparable to the stiffness K so Newton stays well-conditioned and twist stays felt.
+ */
 export function buildLumpedMassForRod(
   n: number,
   restLen: Float64Array | number[],
   material: MaterialField,
-  dts: number,
-  Rstar: number,
+  scale: number,
   out?: LumpedMass
 ): LumpedMass {
   const segs = material.perSegment.length;
   const rl = restLen instanceof Float64Array ? restLen : Float64Array.from(restLen);
   const radii = new Float64Array(segs);
-  const GJ = new Float64Array(segs);
+  const rho = new Float64Array(segs);
   for (let e = 0; e < segs; e++) {
     radii[e] = material.perSegment[e].rodRadius;
-    GJ[e] = rl[e] / (4 * Math.max(1e-12, material.perSegment[e].alphaTwist));
+    // physical density g/cm³ → scene units (N·s²·cm⁻⁴), ONCE; NOT GJ-derived (the old defect).
+    rho[e] = densityFromGramsPerCm3(material.perSegment[e].density);
   }
-  return assembleMass(n, rl, radii, GJ, dts, Rstar, out);
+  return assembleMass(n, rl, radii, rho, scale, out);
 }
 
 /**

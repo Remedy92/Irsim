@@ -119,11 +119,31 @@ J_i^bend   = ρ·½(I_{i-1}ℓ_{i-1} + I_iℓ_i)
 M_i = diag(m_i, m_i, m_i, J_i^bend, J_i^bend, J_i^twist)
 ```
 
-> **Correction.** The prior draft said the bend-conditioned and twist-conditioned ρ are "equivalent." They are NOT: `ρ_bend/ρ_twist = A·ℓ²·(GJ/EI)/J_sec ≈ 38×` for the wire. A single ρ_e cannot make both R_bend and R_twist O(1). **Condition on twist** (the required felt DOF):
+> **Correction.** The prior draft said the bend-conditioned and twist-conditioned ρ are "equivalent." They are NOT: `ρ_bend/ρ_twist = A·ℓ²·(GJ/EI)/J_sec ≈ 38×` for the wire. A single ρ_e cannot make both R_bend and R_twist O(1). The original bring-up therefore used a **synthetic twist-conditioned per-element ρ** (strategy b):
 ```
-ρ_e = R*·GJ_e·Δt_s²/(J_sec,e·ℓ_e²),   R* ≈ 1   (strategy b, per-element)
+ρ_e = R*·GJ_e·Δt_s²/(J_sec,e·ℓ_e²),   R* ≈ 1   (strategy b, per-element — SUPERSEDED in Phase B)
 ```
-Accept whatever R_bend falls out.
+accepting whatever R_bend fell out.
+
+> **PHASE B — PHYSICAL MASS (supersedes the synthetic ρ above).** The synthetic ρ_e was GJ-derived, so
+> it destroyed the real mass RATIOS between regions/instruments (every region got identical
+> conditioning regardless of stiffness/material) and made the contact/coax inverse-mass metric a fake
+> number. Phase B replaces it with PHYSICAL lumped mass from real section geometry × real material
+> density (`MaterialProfile.density`, g/cm³: stainless ~7.9, nitinol ~6.5, polymer/sheath ~1.0–1.6,
+> converted ONCE via `densityFromGramsPerCm3`):
+> ```
+> m_i = ρ·½(A_{i-1}ℓ_{i-1}+A_iℓ_i),  J_i^bend = ρ·½(I…),  J_i^twist = ρ·½(J_sec…)   — ρ now PHYSICAL
+> ```
+> A guidewire is genuinely tiny-mass, so strictly-physical M/Δt² at h=0.5, Δt_s=1/240 is ~6 orders
+> below the stiffness K — that would ill-condition Newton AND erase the felt wind-up/whip. Resolution:
+> keep the physical mass RATIOS, multiply by a SINGLE tuned absolute conditioning scale
+> `D_MASS_SCALE = 8.0e5` (cosserat.ts), **DECOUPLED from GJ**, chosen so the wire-shaft twist term
+> M/Δt² ≈ GJ/ℓ — i.e. it reproduces the previously-validated synthetic twist regime (wire-shaft
+> Jt/Δt²≈17.9 vs GJ/ℓ≈18.4) while now carrying physical ratios. **NEVER re-couple the scale to GJ** —
+> that GJ-coupling was the old ~38× defect. Absolute mass is a free knob for a heavily damped trainer;
+> the ratios are physics, the absolute level is the tuned knob. The twist wind-up / free-flight / BE
+> decay gates (`dynamic.test.ts`) are the canaries that this did not break dynamic twist or
+> substep-invariance.
 
 ### 1.9 SO(3) rotational update (½θ boundary)
 
@@ -188,8 +208,9 @@ src/sim/beamfem/so3.ts       — logSO3, expSO3, TinvSO3, qExpHalf, applyRotatio
 src/sim/beamfem/element.ts   — elementFrame, localDeformation, localStiffness,
                                 elementTangent, corotKgeoAxial; ElemMat carries
                                 kappa0 = steer·restCurvature/ℓ (recomputed per frame)
-src/sim/beamfem/mass.ts      — computeSection, densityForElement (ρ in N·s²·cm⁻⁴),
-                                assembleMass (half-segment lumping)
+src/sim/beamfem/mass.ts      — computeSection, densityFromGramsPerCm3 (ρ g/cm³→N·s²·cm⁻⁴),
+                                assembleMass(…, rho[], scale) (Phase B PHYSICAL half-segment lumping;
+                                the synthetic densityForElement was removed)
 src/sim/beamfem/assemble.ts  — assembleBeam (INCREMENT-form RHS), foldDirichlet (fixedPrefix=2)
 src/sim/beamfem/solve.ts     — newtonSolve, writeBackTheta (only θ→q site), refreshVelocities
 src/sim/beamfem/contact.ts   — schurCompliance ((A⁻¹)_nn), staggeredContactLoop (load-only)

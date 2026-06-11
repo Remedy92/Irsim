@@ -19,17 +19,38 @@ import {
  */
 
 function singleNode(p: Vector3): NodeContactTarget {
+  const w = [1];
+  const wq = [1];
   return {
     x: [p],
     prev: [p.clone()],
     q: [new Quaternion()],
-    w: [1],
-    wq: [1],
-    rodRadius: 0.05
+    w,
+    wq,
+    rodRadius: 0.05,
+    invMassAt: (node) => w[node] ?? 0,
+    invInertiaAt: (node) => wq[node] ?? 0
   };
 }
 
 describe("XPBD normal contact (inequality)", () => {
+  it("uses the target inverse-mass accessor instead of the raw w array", () => {
+    const dt = 1 / 120;
+    const p = new Vector3(1.3, 0, 0);
+    const rod = singleNode(p);
+    rod.w[0] = 0; // raw array says fixed; accessor still exposes the target mass metric
+    rod.invMassAt = () => 1;
+    const c = makeWallContact("r", 0, 0, 0.1, 0.05, 0.05, 1e-9, 1e-8, 1e-7);
+    c.center.set(0, 0, 0);
+    c.vesselTangent.set(0, 1, 0);
+    c.allowedRadius = 1.0;
+
+    solveNormalContact(rod, c, dt);
+
+    expect(p.length()).toBeLessThan(1.3);
+    expect(c.lambdaN).toBeGreaterThan(0);
+  });
+
   it("pushes a penetrating node back to the allowed wall and builds a positive normal load", () => {
     const dt = 1 / 120;
     const center = new Vector3(0, 0, 0);
@@ -125,13 +146,17 @@ describe("spin friction (torque storage + release)", () => {
   // (slip once the cone is exceeded). normal = +x, director = body-z (+z for identity).
   function setup(muRoll: number, lambdaN: number) {
     const q = new Quaternion();
+    const w = [1];
+    const wq = [1];
     const rod: NodeContactTarget = {
       x: [new Vector3()],
       prev: [new Vector3()],
       q: [q],
-      w: [1],
-      wq: [1],
-      rodRadius: 0.05
+      w,
+      wq,
+      rodRadius: 0.05,
+      invMassAt: (node) => w[node] ?? 0,
+      invInertiaAt: (node) => wq[node] ?? 0
     };
     const c = makeWallContact("r", 0, 0, 0.1, 0.05, muRoll, 1e-9, 1e-8, 1e-9);
     c.normal.set(1, 0, 0);

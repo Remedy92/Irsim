@@ -32,7 +32,7 @@ with the bend compliance `α_b = ℓ/(4·EI)` (`units.ts:63-65`; the factor 4 is
   |---|---|---|---|---|
   | shaft EI=12, **S=2** | 5.21e-3 | 75.0 | **2.60 %** | **72.9 %** |
   | shaft EI=12, **S=4** | 5.21e-3 | 300.0 | 0.66 % | 92.3 % |
-  | sheath EI=60, S=4 | 1.04e-3 | 60.0 | 3.23 % | 67.5 % |
+  | current sheath EI=17, S=4 | 3.68e-3 | 211.8 | 0.94 % | 89.3 % |
 
   The shaft removes only ~27 % of its bend error per frame. *(Caveat — confidence medium: this single-constraint geometric-decay residual is illustrative. A single isolated XPBD constraint actually hits its λ fixed point in one step; the real rod softness comes from the **coupled** Gauss-Seidel chain propagation above. Treat "~15–27 % realized" as a directional estimate; the cantilever rig in Fix 0 is the true measurement of realized EI.)*
 
@@ -53,7 +53,10 @@ This contradicts **every** real reference. The Imperial CoRdE catheter/guidewire
 
 **What already works (so the fix is small).** The lead-out *plumbing* is correct and should be preserved:
 - **No axial tie** — the wire genuinely slides freely; only Coulomb friction `μ_io` resists (`coax.ts:26-27`). ✓ matches VCSim3/BeamAdapter.
-- **Open portal** with arc-length gating: coax contact drops once `axialPastTip ≥ COAX_PORTAL_BLEND` (`cosserat.ts:1247-1251`); `portalWeight` ramps containment across the 0.4 cm tip blend. ✓
+- **Open portal** with arc-length gating: coax contact drops once `axialPastTip ≥ COAX_PORTAL_BLEND`;
+  the direct beam clips vessel-wall ownership through `outer.deployedLength() + COAX_PORTAL_BLEND`;
+  the shipped XPBD path keeps vessel normal contact at the catheter tip but releases vessel-friction
+  anchors over the portal blend; `portalWeight` ramps containment across the 0.4 cm tip blend. ✓
 - The arc-length gate correctly stops a far-exited wire node from re-tethering to a proximal sheath segment in a curve. ✓
 
 So the wire *can* geometrically exit; it exits **without the sheath ever having supported or been deflected by it** — which is why telescoping doesn't feel like a real over-the-wire system. Give the outer a nonzero mass scale and the architecture is sound.
@@ -85,7 +88,7 @@ Effort/risk are engineering estimates. Browser feasibility is judged against the
 *Realism gain:* none directly — it **measures** the gap and turns "floppy" into a realized-EI/nominal-EI ratio. Test (d) currently *fails hard* (the table in §1.1 predicts it). *Feasibility:* runs in Node in ms. *Effort:* low. *Risk:* none. *License:* n/a. **Do this first** so every later change is verified, not felt.
 
 **A1 — Make coax coupling two-way (`COAX_OUTER_MASS_SCALE > 0`).**
-*What:* change `COAX_OUTER_MASS_SCALE` from `0.0` to a real outer inverse-mass share. The worktree uses a conservative `0.05` to avoid turning lateral support into an axial-feeling lock in the current unit-mass regime; once A3 lands, re-sweep toward a mass-derived value. This restores the bilateral 3-body containment already coded at `coax.ts:246-256`.
+*What:* change `COAX_OUTER_MASS_SCALE` from `0.0` to a real outer inverse-mass share once the mass/contact metric is calibrated. The current worktree deliberately keeps active coax radial support one-way, uses weak lateral centering for feel, and adds a direct-only rigid-channel safety projection so covered wire samples cannot leave the sheath lumen; that avoids sideways sheath drag, but it is still not a true two-way coupling. After A3 / Schur contact lands, re-sweep toward a mass-derived value and restore the bilateral 3-body containment already coded at `coax.ts:246-256`.
 *Realism gain:* **high for complaint #2** — the sheath feels the wire (straightens/telescopes), the wire gets bilateral lateral support. *Feasibility:* one-line change to existing tested machinery; >60 fps. *Effort:* low. *Risk:* medium — two-way reaction on a near-concentric pair can oscillate (the reason the comment cites for 0.0). Mitigate with the existing `COAX_ALPHA_N = 1e-4` compliant support and interleaved Gauss-Seidel; raise the scale gradually. *License:* n/a.
 
 **A2 — Decouple stiffness from dt/substeps (Small-Steps regime, fixed physical α).**
@@ -168,7 +171,7 @@ The ordering is forced by interaction risk and by the deferred **chirality bug**
 2. **Treat the chirality bug as a gating prerequisite**, not an afterthought: add/un-skip its parity test alongside A0 so that any Phase-2 orientation-solve change is checked for chirality regression *as it lands*, not after.
 
 ### Phase 1 — Stop the bleeding, cheapest first (low effort, high payoff)
-3. **A1** — flip `COAX_OUTER_MASS_SCALE` to a real value. The worktree starts conservatively at 0.05; re-sweep after real per-node mass lands. *(Complaint #2.)*
+3. **A1** — keep the current one-way support as the conservative shipped behavior for now, then flip `COAX_OUTER_MASS_SCALE` to a real value after real per-node mass / Schur contact lands. *(Complaint #2.)*
 4. **A6 + A7** — load the real EI table, the three friction coefficients, the family selector, and corrected radii/wall. *(Complaint #1 targets + #3e geometry.)*
 5. **A4** — pre-curve + transition over 15–25 cm (lands now but only *felt* after Phase 2).
 
@@ -201,7 +204,7 @@ The ordering is forced by interaction risk and by the deferred **chirality bug**
 | Tip→shaft transition zone | over **15–25 cm** from tip | Qiu 2023 |
 | Pre-curve Ω₀ | J-tip arc radius **1.5 or 3 mm**; angled = single bend; over distal **1–8 cm** | Terumo Glidewire tip lengths 1/3/5/8 cm |
 | Catheter shaft EI | ~5–10 N·cm² | Qiu 2023 6F SOFIA shaft 7.54 |
-| Long sheath shaft EI | ~6–17 N·cm² | Qiu 2023 (Neuron Max 16.2, Ballast 17.0) — IRsim's 60 is high; consider lowering |
+| Long sheath shaft EI | ~6–17 N·cm² | Qiu 2023 (Neuron Max 16.2, Ballast 17.0) — IRsim target: 17 |
 | GJ (torsion) | **GJ = EI/(1+ν) ≈ 0.77·EI** at ν=0.3 | isotropic circular rod (NOT "EI·G/E"); expose GJ separately; consider preferred-bend plane for J-tips |
 | μ wall, hydrophilic (rigid wall) | 0.08–0.10 (static 0.10 / kinetic 0.09) | FE study; **elastic wall ≈ 0.05/0.01** (same source) |
 | μ wall, uncoated/PTFE | ~0.25–0.35 | coating CoF 0.01–0.05 / 0.3–0.4 vendor (confidence:medium) |

@@ -59,6 +59,15 @@ export interface BeamPerfCounters {
   elementForceEvals: number;
 }
 
+export interface BeamSubstepSnapshot {
+  /** Active node count captured at the beginning of the substep. */
+  n: number;
+  x: Vector3[];
+  q: Quaternion[];
+  v: Vector3[];
+  omega: Vector3[];
+}
+
 const perfCounters: BeamPerfCounters = {
   tangentAssemblies: 0,
   elementForceEvals: 0
@@ -79,7 +88,8 @@ const FD = 1e-6; // finite-difference step for the numerical tangent
 export function stepBeam(state: BeamState, dtFrame: number, params: BeamParams, solver: BlockTridiagSolver): void {
   const S = Math.max(1, params.substeps);
   const dts = dtFrame / S;
-  for (let s = 0; s < S; s++) substep(state, dts, params, solver);
+  const snap = snapshotFor(state);
+  for (let s = 0; s < S; s++) substep(state, dts, params, solver, snap);
 }
 
 /**
@@ -89,8 +99,7 @@ export function stepBeam(state: BeamState, dtFrame: number, params: BeamParams, 
  * contact afterward should re-finalize velocities from its own pre-substep snapshot.
  */
 export function beamSubstep(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): void {
-  ensureScratch(state.n);
-  substep(state, dts, params, solver);
+  substep(state, dts, params, solver, snapshotFor(state));
 }
 
 /**
@@ -108,47 +117,75 @@ export function beamSubstepWithContact(
   solver: BlockTridiagSolver,
   contact: () => void
 ): void {
-  const n = state.n;
-  ensureScratch(n);
-  for (let i = 0; i < n; i++) {
-    _xN[i].copy(state.x[i]);
-    _qN[i].copy(state.q[i]);
-    _vN[i].copy(state.v[i]);
-    _wN[i].copy(state.omega[i]);
-  }
+  const snap = snapshotFor(state);
+  beginBeamSubstep(state, snap);
   const rounds = Math.max(1, params.maxNewton);
   // Full Newton each staggered round (rebuild tangent + residual, then project contact). A frozen
   // tangent was tried for perf but the re-solve overshoots once contact moves nodes (the numerical
   // tangent goes stale) — the correct + cheap fix is the analytic consistent tangent, pending.
   for (let it = 0; it < rounds; it++) {
-    newtonIter(state, dts, params, solver);
+    beamNewtonRound(state, dts, params, solver, snap);
     contact();
   }
+  finalizeBeamSubstep(state, snap, dts);
+}
+
+export function createBeamSubstepSnapshot(capacity = 0): BeamSubstepSnapshot {
+  const snap: BeamSubstepSnapshot = { n: 0, x: [], q: [], v: [], omega: [] };
+  ensureSnapshotCapacity(snap, capacity);
+  return snap;
+}
+
+/** Capture xⁿ/qⁿ/vⁿ/ωⁿ once, before Newton/contact rounds move the beam. */
+export function beginBeamSubstep(state: BeamState, snap: BeamSubstepSnapshot): void {
+  const n = state.n;
+  ensureScratch(n);
+  ensureSnapshotCapacity(snap, n);
+  snap.n = n;
   for (let i = 0; i < n; i++) {
-    state.v[i].subVectors(state.x[i], _xN[i]).multiplyScalar(1 / dts);
-    logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
+    snap.x[i].copy(state.x[i]);
+    snap.q[i].copy(state.q[i]);
+    snap.v[i].copy(state.v[i]);
+    snap.omega[i].copy(state.omega[i]);
+  }
+}
+
+/** One Newton round: rebuild tangent, solve residual, and update positions/frames only. */
+export function beamNewtonRound(
+  state: BeamState,
+  dts: number,
+  params: BeamParams,
+  solver: BlockTridiagSolver,
+  snap: BeamSubstepSnapshot
+): number {
+  ensureScratch(state.n);
+  assertSnapshotMatches(state, snap);
+  return newtonIter(state, dts, params, solver, snap);
+}
+
+/** Finalize velocities from the same pre-substep snapshot after all projections are complete. */
+export function finalizeBeamSubstep(state: BeamState, snap: BeamSubstepSnapshot, dts: number): void {
+  assertSnapshotMatches(state, snap);
+  for (let i = 0; i < state.n; i++) {
+    state.v[i].subVectors(state.x[i], snap.x[i]).multiplyScalar(1 / dts);
+    logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(snap.q[i]).conjugate()), _phi);
     state.omega[i].copy(_phi).multiplyScalar(1 / dts);
   }
 }
 
-function substep(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): void {
-  const n = state.n;
-  ensureScratch(n);
-  for (let i = 0; i < n; i++) {
-    _xN[i].copy(state.x[i]);
-    _qN[i].copy(state.q[i]);
-    _vN[i].copy(state.v[i]);
-    _wN[i].copy(state.omega[i]);
-  }
+function substep(
+  state: BeamState,
+  dts: number,
+  params: BeamParams,
+  solver: BlockTridiagSolver,
+  snap: BeamSubstepSnapshot
+): void {
+  beginBeamSubstep(state, snap);
   for (let it = 0; it < params.maxNewton; it++) {
-    const res = newtonIter(state, dts, params, solver);
+    const res = beamNewtonRound(state, dts, params, solver, snap);
     if (res < 1e-10) break;
   }
-  for (let i = 0; i < n; i++) {
-    state.v[i].subVectors(state.x[i], _xN[i]).multiplyScalar(1 / dts);
-    logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
-    state.omega[i].copy(_phi).multiplyScalar(1 / dts);
-  }
+  finalizeBeamSubstep(state, snap, dts);
 }
 
 /** Co-rotational global internal force (12) for element e into `out`. */
@@ -214,7 +251,7 @@ function perturbNodeDof(state: BeamState, j: number, d: number, eps: number): vo
  * nodes enough to stale the numerical tangent. The counted Phase-0 perf gate makes that cost visible;
  * an analytic consistent tangent is the intended optimization path.
  */
-function assembleTangent(state: BeamState, dts: number, params: BeamParams): void {
+function assembleTangent(state: BeamState, dts: number, params: BeamParams, snap: BeamSubstepSnapshot): void {
   perfCounters.tangentAssemblies++;
   const n = state.n;
   const inv2 = 1 / (dts * dts);
@@ -265,7 +302,7 @@ function assembleTangent(state: BeamState, dts: number, params: BeamParams): voi
       const D = _diag[i];
       const at = m * inv2 + params.a0 * m * inv1;
       D[0] += at; D[7] += at; D[14] += at;
-      const Rm = quatToMat3(_qN[i], _Rm);
+      const Rm = quatToMat3(snap.q[i], _Rm);
       const ax = _ax.set(Rm[2], Rm[5], Rm[8]);
       const cInert = inv2 + params.a0 * inv1;
       const whip = params.tauOmega > 0 ? Jt / (params.tauOmega * dts) : 0;
@@ -284,7 +321,13 @@ function assembleTangent(state: BeamState, dts: number, params: BeamParams): voi
 }
 
 /** Build b = −R(u) at the CURRENT iterate, solve A·δu = b with the (possibly frozen) tangent, apply. */
-function residualSolveApply(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
+function residualSolveApply(
+  state: BeamState,
+  dts: number,
+  params: BeamParams,
+  solver: BlockTridiagSolver,
+  snap: BeamSubstepSnapshot
+): number {
   const n = state.n;
   const inv2 = 1 / (dts * dts);
   const inv1 = 1 / dts;
@@ -303,17 +346,17 @@ function residualSolveApply(state: BeamState, dts: number, params: BeamParams, s
       const m = state.mass.m[i];
       const Jb = state.mass.Jb[i];
       const Jt = state.mass.Jt[i];
-      const dx = _v3a.subVectors(state.x[i], _xN[i]);
-      const Rt = _v3b.copy(dx).multiplyScalar(m * inv2 + params.a0 * m * inv1).addScaledVector(_vN[i], -m * inv2 * dts);
+      const dx = _v3a.subVectors(state.x[i], snap.x[i]);
+      const Rt = _v3b.copy(dx).multiplyScalar(m * inv2 + params.a0 * m * inv1).addScaledVector(snap.v[i], -m * inv2 * dts);
       Rt.x += _fIntBase[6 * i]; Rt.y += _fIntBase[6 * i + 1]; Rt.z += _fIntBase[6 * i + 2];
       if (state.fext) Rt.addScaledVector(state.fext[i], -1);
       _rhs[6 * i] = -Rt.x; _rhs[6 * i + 1] = -Rt.y; _rhs[6 * i + 2] = -Rt.z;
-      const Rm = quatToMat3(_qN[i], _Rm);
+      const Rm = quatToMat3(snap.q[i], _Rm);
       const ax = _ax.set(Rm[2], Rm[5], Rm[8]);
-      const Phi = logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(_qN[i]).conjugate()), _phi);
+      const Phi = logQuat(_qrel.copy(state.q[i]).multiply(_qtmp.copy(snap.q[i]).conjugate()), _phi);
       const cInert = inv2 + params.a0 * inv1;
       const whip = params.tauOmega > 0 ? Jt / (params.tauOmega * dts) : 0;
-      const rotCoef = _v3c.copy(Phi).multiplyScalar(cInert).addScaledVector(_wN[i], -inv2 * dts);
+      const rotCoef = _v3c.copy(Phi).multiplyScalar(cInert).addScaledVector(snap.omega[i], -inv2 * dts);
       const Rr = _v3d.copy(rotCoef).multiplyScalar(Jb).addScaledVector(ax, (Jt - Jb) * ax.dot(rotCoef));
       if (whip > 0) Rr.addScaledVector(ax, whip * ax.dot(Phi));
       Rr.x += _fIntBase[6 * i + 3]; Rr.y += _fIntBase[6 * i + 4]; Rr.z += _fIntBase[6 * i + 5];
@@ -337,18 +380,26 @@ function residualSolveApply(state: BeamState, dts: number, params: BeamParams, s
 }
 
 /** One full Newton iteration (rebuild tangent + residual + solve). Used by the non-staggered substep + staticSolve. */
-function newtonIter(state: BeamState, dts: number, params: BeamParams, solver: BlockTridiagSolver): number {
-  assembleTangent(state, dts, params);
-  return residualSolveApply(state, dts, params, solver);
+function newtonIter(
+  state: BeamState,
+  dts: number,
+  params: BeamParams,
+  solver: BlockTridiagSolver,
+  snap: BeamSubstepSnapshot
+): number {
+  assembleTangent(state, dts, params, snap);
+  return residualSolveApply(state, dts, params, solver, snap);
 }
 
 /** Quasi-static solve: Newton on f_int = f_ext (no inertia/damping). Returns the final ‖δu‖∞. */
 export function staticSolve(state: BeamState, solver: BlockTridiagSolver, maxIters = 40): number {
   ensureScratch(state.n);
+  const snap = snapshotFor(state);
+  beginBeamSubstep(state, snap);
   const p: BeamParams = { substeps: 1, a0: 0, a1: 0, tauOmega: 0, maxNewton: 1, static: true };
   let res = 0;
   for (let it = 0; it < maxIters; it++) {
-    res = newtonIter(state, 1, p, solver);
+    res = newtonIter(state, 1, p, solver, snap);
     if (res < 1e-10) break;
   }
   return res;
@@ -373,12 +424,9 @@ let _lower: Float64Array[] = [];
 let _upper: Float64Array[] = [];
 let _rhs = new Float64Array(0);
 let _du = new Float64Array(0);
-let _xN: Vector3[] = [];
-let _qN: Quaternion[] = [];
-let _vN: Vector3[] = [];
-let _wN: Vector3[] = [];
 let _fElem: Float64Array[] = [];
 let _fIntBase = new Float64Array(0);
+const _compatSnapshots = new WeakMap<BeamState, BeamSubstepSnapshot>();
 
 function ensureScratch(n: number): void {
   if (_cap >= n) return;
@@ -388,12 +436,32 @@ function ensureScratch(n: number): void {
   _upper = Array.from({ length: _cap }, () => new Float64Array(36));
   _rhs = new Float64Array(6 * _cap);
   _du = new Float64Array(6 * _cap);
-  _xN = Array.from({ length: _cap }, () => new Vector3());
-  _qN = Array.from({ length: _cap }, () => new Quaternion());
-  _vN = Array.from({ length: _cap }, () => new Vector3());
-  _wN = Array.from({ length: _cap }, () => new Vector3());
   _fElem = Array.from({ length: _cap }, () => new Float64Array(12));
   _fIntBase = new Float64Array(6 * _cap);
+}
+
+function snapshotFor(state: BeamState): BeamSubstepSnapshot {
+  let snap = _compatSnapshots.get(state);
+  if (!snap) {
+    snap = createBeamSubstepSnapshot(state.n);
+    _compatSnapshots.set(state, snap);
+  }
+  return snap;
+}
+
+function ensureSnapshotCapacity(snap: BeamSubstepSnapshot, n: number): void {
+  for (let i = snap.x.length; i < n; i++) {
+    snap.x.push(new Vector3());
+    snap.q.push(new Quaternion());
+    snap.v.push(new Vector3());
+    snap.omega.push(new Vector3());
+  }
+}
+
+function assertSnapshotMatches(state: BeamState, snap: BeamSubstepSnapshot): void {
+  if (snap.n !== state.n) {
+    throw new Error(`BeamSubstepSnapshot node count mismatch: snapshot=${snap.n}, state=${state.n}`);
+  }
 }
 
 const _saveX = new Vector3();

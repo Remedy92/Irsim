@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { Quaternion, Vector3 } from "three";
 import { BlockTridiagSolver } from "../blocktridiag";
-import { BeamParams, BeamState, staticSolve, stepBeam } from "./dynamic";
+import {
+  BeamParams,
+  BeamState,
+  beamNewtonRound,
+  beamSubstep,
+  beginBeamSubstep,
+  createBeamSubstepSnapshot,
+  finalizeBeamSubstep,
+  staticSolve,
+  stepBeam
+} from "./dynamic";
 import { ElemMat } from "./element";
-import { assembleMass } from "./mass";
+import { assembleMass, densityFromGramsPerCm3 } from "./mass";
 import { logQuat } from "./so3";
 
 const K0 = { x: 0, y: 0, z: 0 };
@@ -28,9 +38,13 @@ function straightRod(n: number, ell: number, mat: ElemMat, fixedPrefix: number, 
   if (manualMass !== undefined) {
     mass = { m: new Float64Array(n).fill(manualMass), Jb: new Float64Array(n).fill(0.01 * manualMass), Jt: new Float64Array(n).fill(0.01 * manualMass) };
   } else {
+    // Phase B: PHYSICAL lumped mass — steel ρ=7.9 g/cm³ × the production GJ-decoupled conditioning
+    // scale (cosserat.ts D_MASS_SCALE = 8e5), chosen so wire-shaft twist M/Δt² ≈ GJ/ℓ. For the
+    // wind-up canary's r=0.05, EI=12 (GJ≈9.24), ℓ=0.5 this reproduces the previously-validated twist
+    // conditioning (Jt within ~3% of the old synthetic value) — see mass.ts header.
     const radii = new Float64Array(n - 1).fill(0.05);
-    const GJ = new Float64Array(n - 1).fill(mat.GJ);
-    mass = assembleMass(n, restLen, radii, GJ, 1 / 60 / 4, 1.0); // dts for S=4, R*=1
+    const rho = new Float64Array(n - 1).fill(densityFromGramsPerCm3(7.9));
+    mass = assembleMass(n, restLen, radii, rho, 8.0e5);
   }
   return { n, x, q, v, omega, restLen, elem, mass, fixedPrefix };
 }
@@ -76,6 +90,59 @@ describe("beamfem dynamic — Rayleigh damping", () => {
     // and it approximates the felt continuous decay exp(−a0·t) within the BE O(dt) bias
     const continuous = Math.exp(-a0 * frames * dt);
     expect(Math.abs(st.v[0].length() - continuous) / continuous).toBeLessThan(0.12);
+  });
+});
+
+describe("beamfem dynamic — explicit substep snapshots", () => {
+  it("interleaved Newton rounds keep each rod's pre-substep state isolated", () => {
+    const a = straightRod(2, 1, ZERO_MAT, 0, 1.0);
+    const b = straightRod(2, 1, ZERO_MAT, 0, 7.0);
+    for (const x of b.x) x.add(new Vector3(50, -20, 10));
+    for (const v of a.v) v.set(1.25, -0.5, 0.25);
+    for (const v of b.v) v.set(-2.5, 0.75, -0.4);
+
+    const ax0 = a.x[0].clone();
+    const bx0 = b.x[0].clone();
+    const av0 = a.v[0].clone();
+    const bv0 = b.v[0].clone();
+    const params: BeamParams = { substeps: 1, a0: 0, a1: 0, tauOmega: 0, maxNewton: 1 };
+    const dts = 0.02;
+    const snapA = createBeamSubstepSnapshot();
+    const snapB = createBeamSubstepSnapshot();
+
+    beginBeamSubstep(a, snapA);
+    beginBeamSubstep(b, snapB);
+    beamNewtonRound(a, dts, params, new BlockTridiagSolver(), snapA);
+    beamNewtonRound(b, dts, params, new BlockTridiagSolver(), snapB);
+    finalizeBeamSubstep(a, snapA, dts);
+    finalizeBeamSubstep(b, snapB, dts);
+
+    expect(a.x[0].distanceTo(ax0.addScaledVector(av0, dts))).toBeLessThan(1e-9);
+    expect(b.x[0].distanceTo(bx0.addScaledVector(bv0, dts))).toBeLessThan(1e-9);
+    expect(a.v[0].distanceTo(av0)).toBeLessThan(1e-9);
+    expect(b.v[0].distanceTo(bv0)).toBeLessThan(1e-9);
+  });
+
+  it("the compatibility beamSubstep wrapper matches begin → Newton → finalize", () => {
+    const explicit = straightRod(2, 1, ZERO_MAT, 0, 1.0);
+    const wrapped = straightRod(2, 1, ZERO_MAT, 0, 1.0);
+    for (const v of explicit.v) v.set(0.4, 0.1, -0.2);
+    for (const v of wrapped.v) v.set(0.4, 0.1, -0.2);
+
+    const params: BeamParams = { substeps: 1, a0: 0, a1: 0, tauOmega: 0, maxNewton: 1 };
+    const dts = 1 / 120;
+    const snap = createBeamSubstepSnapshot();
+    beginBeamSubstep(explicit, snap);
+    beamNewtonRound(explicit, dts, params, new BlockTridiagSolver(), snap);
+    finalizeBeamSubstep(explicit, snap, dts);
+    beamSubstep(wrapped, dts, params, new BlockTridiagSolver());
+
+    for (let i = 0; i < explicit.n; i++) {
+      expect(wrapped.x[i].distanceTo(explicit.x[i])).toBeLessThan(1e-12);
+      expect(wrapped.v[i].distanceTo(explicit.v[i])).toBeLessThan(1e-12);
+      expect(Math.abs(wrapped.q[i].dot(explicit.q[i]))).toBeGreaterThan(1 - 1e-12);
+      expect(wrapped.omega[i].distanceTo(explicit.omega[i])).toBeLessThan(1e-12);
+    }
   });
 });
 

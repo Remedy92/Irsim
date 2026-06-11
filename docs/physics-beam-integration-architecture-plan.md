@@ -1,7 +1,10 @@
 # Dynamic Beam Integration Layer — Higher-Architecture Fix Plan
 
-Status: **implementation plan / Phase 0 scaffold landed in the working tree.** Scope: the integration/adapter boundary between the
-dynamic co-rotational beam FEM (`src/sim/beamfem/*`) and the host `CosseratRod` / `CoaxialAssembly`
+Status: **working refactor plan with Phases 1-4 partially landed and the production ship decision
+made.** The current shipped app path remains the calibrated XPBD `SHIPPED_*` presets; the dynamic co-rotational beam FEM
+(`src/sim/beamfem/*`) is the long-term physics base but is still experimental until performance,
+browser/app feel, and app-level alias gates clear. Scope: the integration /
+adapter boundary between the beam kernel and the host `CosseratRod` / `CoaxialAssembly`
 (`src/sim/cosserat.ts`). Companion to `physics-design-dynamic-corotational-beam.md` (the kernel spec).
 
 This plan was produced by adversarially verifying the 8 review findings against the actual code
@@ -19,41 +22,42 @@ turns green.
 
 ### Phase 0 — Verification scaffold (landed; expected red baselines)
 
-Status: **done in working tree; not a physics fix.**
+Status: **done in working tree.**
 
 Purpose:
-- Make the shipped direct presets a single source of truth: `SHIPPED_GUIDEWIRE`, `SHIPPED_SHEATH`.
+- Make the live app presets a single source of truth: `SHIPPED_GUIDEWIRE`, `SHIPPED_SHEATH`.
 - Point Viewport and app-integration tests at those aliases.
 - Add diagnostics for vessel-envelope penetration and numerical-tangent work.
 - Create red baselines for the frame-ownership and containment defects.
 
 Current expected verification state:
-- `npm run typecheck` passes.
-- `npm run build` passes, with the existing large-chunk warning.
-- `npm test` is expected to fail on exactly two red baselines until later phases fix them:
-  - `beamfem integration — segment ↔ nodal frame bridge > RED BASELINE: repeated segment↔nodal frame bridging does not bleed a twist gradient`
-  - `Phase-3 live integration — coaxial telescoping on the direct beam (#2) > RED BASELINE: shipped direct coax stays inside the curved anatomy envelope`
+- `npm run typecheck`, `npm test`, and `npm run build` pass on the shipped XPBD path.
+- The short-feed direct curved-anatomy containment probes are now normal green regressions for both
+  solo guidewire and short-sheath coax cases.
+- The existing large-chunk Vite warning remains unrelated to the physics path.
 
 Exit criteria already satisfied:
 - Shipped presets are centralized.
 - The real app path is under test.
 - Direct-path containment/perf are observable.
 
-### Phase 1 — Material ownership (next; fixes F1)
+### Phase 1 — Material ownership (fixes F1)
 
-Status: **next to implement.**
+Status: **done in working tree.**
 
 Purpose:
 - Ensure injected material keeps the rod's declared region identity. A sheath must inject sheath
   shaft material; a wire must inject wire shaft material.
 
 Implementation tasks:
-- In `material.ts`, export `cloneProfile(profile)` with a deep `restCurvature.clone()`.
+- In `material.ts`, export `cloneProfile(profile)` with a deep `restCurvature.clone()`. **Done.**
 - Export a sheath shaft profile helper, or a generic region-backed shaft profile helper, so
-  `cosserat.ts` does not reach into `REGION`.
+  `cosserat.ts` does not reach into `REGION`. **Done.**
 - In `CosseratRod`, capture a rod-specific shaft prototype at construction from `params.profile`.
+  **Done.**
 - Replace `prependNode()`'s global `shaftProfile(h)` call with `cloneProfile(this.shaftPrototype)`.
-- Keep `bendComplianceScale` behavior identical for injected material.
+  **Done.**
+- Keep `bendComplianceScale` behavior identical for injected material. **Done.**
 
 Tests to add:
 - Feed many segments into `SHEATH_DIRECT`; assert injected segments keep sheath EI/GJ/radius/friction.
@@ -67,7 +71,7 @@ Expected result:
 
 ### Phase 2 — Frame ownership (fixes F3 red baseline)
 
-Status: **pending Phase 1.**
+Status: **done in working tree.**
 
 Purpose:
 - Make `dNodeQ[]` the persistent beam-owned orientation state.
@@ -75,11 +79,12 @@ Purpose:
 
 Implementation tasks:
 - In `ensureDirect()`, only seed `dNodeQ` from segment frames on first direct use or true resize.
-- On prepend/retract, splice `dNodeQ` alongside `dVel`/`dOmega`.
-- Keep `segmentFramesFromNodal(dNodeQ, q)` as the only steady-state writer to `q[]`.
-- Stop reading `q[]` back into `dNodeQ` during the direct steady loop.
+  **Done.**
+- On prepend/retract, splice `dNodeQ` alongside `dVel`/`dOmega`. **Done.**
+- Keep `segmentFramesFromNodal(dNodeQ, q)` as the only steady-state writer to `q[]`. **Done.**
+- Stop reading `q[]` back into `dNodeQ` during the direct steady loop. **Done.**
 - Reconcile frame persistence with `advectForward(h)` so injected/advected positions and frames remain
-  coherent.
+  coherent. **Done.**
 
 Tests to add or turn green:
 - Turn the Phase-0 repeated bridge red baseline green.
@@ -93,27 +98,28 @@ Expected result:
 
 ### Phase 3 — Beam inverse-mass metric for contact/coax (fixes F5 groundwork)
 
-Status: **pending Phase 2.**
+Status: **done in working tree for the projection metric; full direct Schur coupling remains Phase 5+.**
 
 Purpose:
-- Make wall/contact/coax projection use the beam's real lumped mass/inertia instead of legacy `w[]`
-  0/1 weights.
+- Make wall/contact/coax projection use `NodeContactTarget` inverse-mass/inertia accessors instead of
+  directly reading legacy `w[]` 0/1 weights.
 
 Implementation tasks:
-- Extend `NodeContactTarget` with `invMassAt(node)` and `invInertiaAt(node)`.
+- Extend `NodeContactTarget` with `invMassAt(node)` and `invInertiaAt(node)`. **Done.**
 - Implement direct accessors from `dMass`; fall back to legacy `w[]`/`wq[]` if direct mass is unbuilt
-  or `useDirectSolve` is false.
+  or `useDirectSolve` is false. **Done.**
 - Migrate wall normal, translational friction, segment-wall contact, self-contact, coax normal, and
-  coax centering to the accessor metric.
-- Keep `outerMassScale` in the coax API for legacy callers; direct path passes `1.0`.
+  coax centering to the accessor metric. **Done.**
+- Keep `outerMassScale` in the coax API for legacy callers. The current direct path deliberately keeps
+  radial support effectively one-way (`outerMassScale = 0`) until the coupled Schur contact model can
+  solve the sheath and wire in one system. **Done / intentionally conservative.**
 - Defer direct spin-friction migration to Phase 4, where node-frame roll anchors are redesigned.
 
 Tests to add:
 - Legacy coax suite still green.
-- Direct mass-ratio coax test: heavier sheath receives the correct smaller displacement without an
-  `outerMassScale` fudge.
+- Coax accessor tests cover inverse-mass reads and one-way centering support for the direct path.
 - Guard `invMassAt`/`invInertiaAt` on legacy rods before `dMass` exists.
-- Segment-wall and coax-centering use the same metric as coax normal.
+- Segment-wall and coax-centering use the same accessor surface as coax normal.
 
 Expected result:
 - F5 substantially reduced and ready for the unified driver.
@@ -121,7 +127,9 @@ Expected result:
 
 ### Phase 4 — Unified staggered direct driver (fixes F2, F4, F6; likely containment)
 
-Status: **pending Phase 3; highest-risk phase.**
+Status: **partially started; highest-risk phase.** The `dynamic.ts` substep lifecycle is split
+around per-state snapshots, and the direct wire/sheath coordinator now finalizes both rods after
+wall + coax projections. Schur-style contact compliance and direct-path spin friction remain pending.
 
 Purpose:
 - Replace the current atomic `beamSubstepWithContact()` + after-the-fact coax projection with one
@@ -129,22 +137,43 @@ Purpose:
   `snapshot once → beam Newton rounds → all constraints in one metric → finalize velocities once`.
 
 Implementation tasks:
-- In `beamfem/dynamic.ts`, add per-`BeamState` `SubstepSnapshot`.
+- In `beamfem/dynamic.ts`, add per-`BeamState` `SubstepSnapshot`. **Done.**
 - Split dynamic stepping into:
-  - `beginSubstep(state, snap)`
-  - `newtonRound(state, dts, params, solver, snap)`
-  - `finalizeVelocities(state, snap, dts)`
+  - `beginBeamSubstep(state, snap)` **Done.**
+  - `beamNewtonRound(state, dts, params, solver, snap)` **Done.**
+  - `finalizeBeamSubstep(state, snap, dts)` **Done.**
 - Thread the per-rod snapshot into residual assembly and twist-axis freeze, not only finalization.
-- In `cosserat.ts`, add the direct driver used by both solo rods and coax assemblies.
-- Compute portal/clip length once after fresh outer feed and use that same value for wall clipping and
-  coax pairing.
-- Move wall normal, wall friction, node-space spin friction, coax normal, coax friction, and centering
-  inside the staggered rounds before finalization.
-- Finalize `dVel`/`dOmega` exactly once for each rod after all projections.
-- Re-zero inlet velocity/angular velocity after finalization.
+  **Done.**
+- In `cosserat.ts`, add the direct driver used by both solo rods and coax assemblies. **Done.**
+- Compute portal/clip length after fresh outer feed and use that same fresh deployment for wall
+  clipping and coax pairing. **Done for the direct coordinator.**
+- Move wall normal, wall friction, coax normal, coax friction, and centering inside the staggered
+  rounds before finalization. **Done.** Direct-path node-space spin friction remains pending.
+- Finalize `dVel`/`dOmega` exactly once for each rod after all projections. **Done.**
+- Re-zero inlet velocity/angular velocity after finalization. **Done.**
+- Re-zero direct beam velocity/angular velocity after legacy-style material transport
+  (`prependNode`/`removeProximalNode` + advection). **Done.** This prevents stale dynamic velocities
+  from riding along with kinematic insertion/retraction edits, but it is adapter hygiene rather than
+  a full app-level fix.
 
 Tests to add or turn green:
-- Coax projection enters `dVel` for both rods.
+- Coax projection enters `dVel` for the corrected direct rod. **Done.**
+- Short-sheath direct coax curved-anatomy containment during app-style feed. **Done after lowering
+  the direct feed rate and pairing covered wire nodes by same-arc sheath coordinates.**
+- Solo direct curved-anatomy containment during the same short app-style feed. **Done with a
+  direct-only rigid-lumen safety projection and branch-preserving direct wall ownership.**
+- Covered direct guidewire material remains inside the sheath channel while the open portal stays
+  soft. **Done with a direct-only rigid-channel safety projection.**
+- Commanded direct guidewire advance exits well past a held sheath tip without rigidly dragging the
+  sheath. **Done.**
+- Repeated direct pullback/re-feed no longer lets geometrically sheathed wire build vessel contacts
+  ahead of the soft portal blend. **Done by clipping vessel ownership through
+  `outer.deployedLength() + COAX_PORTAL_BLEND`; covered-wire clearance and vessel-envelope
+  penetration are active regressions.**
+- Repeated shipped-XPBD pullback/re-feed no longer lets stale vessel-friction anchors in the
+  sheath-tip transition pull the wire forward after retract. **Done by muting vessel friction, but
+  not vessel normal containment, over the portal blend.** This avoids the stretch spike caused by
+  broad scalar vessel clipping on the legacy lane.
 - Single-substep portal consistency: no newly covered/exposed node gets neither vessel nor sheath
   containment.
 - Direct-path spin wind-up/release with node-space roll anchors.
@@ -161,7 +190,41 @@ Expected result:
 
 ### Phase 5 — Verification cleanup and ship decision
 
-Status: **pending Phase 4.**
+Status: **ship default on the calibrated XPBD lane; keep direct experimental.** An attempted `SHIPPED_* → *_DIRECT` flip after the
+Phase-4 coordinator split still failed app-level curved-anatomy containment and pullback checks.
+Increasing direct contact rounds made the path slower without fixing the failure. The compliant
+force-capped feed motor now exists as an opt-in direct path (`useCompliantFeedMotor`) and is covered
+by straight-tube feed/stall tests, but a `SHIPPED_* → *_DIRECT + compliant feed` probe still failed
+curved-anatomy containment. That specific short-feed containment blocker is now green for both solo
+direct guidewire and short-sheath direct coax: the direct wall query preserves established branch
+ownership instead of reacquiring to an outside side branch, a direct-only rigid-lumen safety pass keeps
+solo samples inside the vessel envelope, and a direct-only rigid-channel pass keeps covered wire
+samples inside the sheath lumen while leaving the open portal soft. Direct coax now also asserts that
+a commanded wire advance exits well past a held sheath tip without rigidly dragging the sheath, and
+that repeated pullback/re-feed keeps lagging, geometrically covered wire out of vessel-wall ownership
+until it clears the soft portal blend. The shipped XPBD lane keeps vessel normal contact at the
+catheter tip but releases portal-zone vessel friction anchors, which fixes the original repeated
+pullback lurch without reintroducing covered-shaft stretch. This does **not** make the direct aliases
+shippable yet: the direct aliases still need browser/app feel gates, and the numerical tangent remains
+over budget until the analytic tangent or a cheaper contact coupling lands.
+
+Current app-level evidence:
+- The dev runtime now supports `?physics=direct` for debug/browser verification while production and
+  normal users remain locked to the shipped XPBD aliases.
+- `node scripts/browser-physics-smoke.mjs --physics direct` exercises the actual UI/debug path and
+  currently fails the direct lane. The failure is specific and actionable: in the wire-forward smoke,
+  direct mode stayed finite and vessel-contained but reached `wireMaxSegErr ≈ 2.16 cm`,
+  `sheathMaxSegErr ≈ 0.34 cm`, and `wireExitPastOuterTipFinal ≈ 0.22 cm`. In the sheath-forward
+  smoke, the direct lane reached `wireMaxSegErr ≈ 1.83 cm` and `sheathMaxSegErr ≈ 0.58 cm`.
+  Segment stretch is still far above the shipped browser tolerance, so the direct aliases must stay
+  behind the dev-only `?physics=direct` lane.
+- A naive direct rest-length projection inside the staggered contact rounds was rejected: it reduced
+  the app-level stretch symptom but broke direct curved-anatomy containment (`maxWirePen ≈ 0.36 cm`
+  in the short-sheath gate, worse in repeated pullback). The next fix needs coupled inextensibility
+  inside the direct solve/contact system, not an after-the-fact position cleanup.
+- A later direct-only length safety pass paired with vessel/channel projection was also rejected for
+  the ship window: it restored some length locally but corrupted branch/lumen ownership in the solo
+  and repeated-pullback direct regressions. Do not revive local length cleanup as a shipping shortcut.
 
 Purpose:
 - Convert the temporary red-baseline labels into normal regression gates and decide whether the direct
@@ -177,18 +240,22 @@ Implementation tasks:
   - torque feels like wind-up/release rather than instant or dead
   - frame rate feels acceptable in 3D and fluoro
 - Keep counted perf gate; add browser wall-clock profiling notes if available.
+- Turn `scripts/browser-physics-smoke.mjs --physics direct` green before flipping
+  `SHIPPED_* → *_DIRECT`.
 - Decide whether the analytic consistent tangent is required before calling the direct path fully shipped.
 
 Expected result:
 - All CI tests green except explicitly deferred chirality/todos.
-- The default `SHIPPED_*` presets either stay direct with confidence or are temporarily reverted with
-  the red gates documenting why.
+- The default `SHIPPED_*` presets either stay direct with confidence or remain on the legacy lane with
+  the red gates documenting why. Current state: **remain legacy until browser/app feel and perf gates
+  prove the direct aliases in the app path**.
 
 ### Explicitly out of scope for this phase sequence
 
 - Chirality parity fix.
 - Analytic consistent tangent implementation.
-- Force-capped/back-pressure feed motor.
+- Force-capped/back-pressure feed motor. **Opt-in direct implementation landed; calibration and
+  curved-anatomy coupling remain part of the ship gate.**
 - Full Schur-complement contact coupling.
 - Removing the segment-frame store entirely.
 
@@ -224,8 +291,9 @@ finding is one such collision:
 Notes from verification:
 - **F1** is end-to-end on the shipped `SHEATH_DIRECT` path: `prependNode` (`cosserat.ts:576`)
   always prepends `REGION.wireShaft` (EI≈12, r=0.05) even though the rod was built with
-  `REGION.sheathShaft` (EI≈60, r=0.1). The leaked profile feeds **both** `dElem` (stiffness) and
-  `dMass` (radius² → ~4× lighter). A fully deployed sheath becomes ~all wire.
+  `REGION.sheathShaft` (currently EI≈17, r=0.1 after source-backed recalibration). The leaked
+  profile feeds **both** `dElem` (stiffness) and `dMass` (radius² → ~4× lighter). A fully deployed
+  sheath becomes ~all wire.
 - **F4** downgraded to **low**: the lag is sub-node (~0.15–0.29 cm vs h=0.5) and self-corrects next
   substep — but it exposes a real **split-time portal**: the wall clip is sampled before
   `outer.directSubstep`, while `buildCoaxContacts` samples the fresh deployment, so a newly
@@ -265,9 +333,10 @@ Notes from verification:
   substep via `segmentFramesFromNodal` *after* all solving, consumed only by contact build / coax
   pairing / rendering, and **never read back into the beam**.
 
-**Contact uses the beam metric:** `NodeContactTarget` gains `invMassAt(node)` / `invInertiaAt(node)`
-so wall normal/friction/spin and the coax 3-body distribution all weight by real lumped mass — and
-the `outerMassScale` fudge becomes a no-op.
+**Contact uses an accessor metric:** `NodeContactTarget` gains `invMassAt(node)` /
+`invInertiaAt(node)` so wall normal/friction/spin and coax constraints stop reading legacy `w[]`
+directly. The direct path still keeps coax radial support one-way with `outerMassScale = 0` until
+Schur contact can couple wire and sheath without destabilizing containment.
 
 ### The unified staggered substep driver
 
@@ -280,25 +349,25 @@ New low-level primitives in `beamfem/dynamic.ts` (snapshot lives in a **per-`Bea
 `SubstepSnapshot`**, not module-level scratch):
 
 ```
-beginSubstep(state, snap)            // copy x,q,v,omega → snap
-newtonRound(state, dts, params, sol) // ONE Newton iter (tangent + residual); positions/frames only
-finalizeVelocities(state, snap, dts) // v=(x−xN)/dts, omega=logQuat(q·conj(qN))/dts
+beginBeamSubstep(state, snap)            // copy x,q,v,omega → snap
+beamNewtonRound(state, dts, params, sol) // ONE Newton iter (tangent + residual); positions/frames only
+finalizeBeamSubstep(state, snap, dts)    // v=(x−xN)/dts, omega=logQuat(q·conj(qN))/dts
 ```
 
 Coordinator (`cosserat.ts`) — solo passes `[rod]`, coax passes `[outer, inner] + coupling`:
 
 ```
 runStaggeredSubstep(rods, feeds, dts, coax?)
-  1. per rod: inject/retract → ensureDirect (seed dNodeQ only on resize) → anchorInletDirect → beginSubstep(snap[r])
+  1. per rod: inject/retract → ensureDirect (seed dNodeQ only on resize) → anchorInletDirect → beginBeamSubstep(snap[r])
   2. compute the coax portal ONCE from the FRESH outer.deployedLength(); set inner wall-clip from the
      SAME value; build each rod's wall contacts; if coax, buildCoaxContacts once   ← kills F4
   3. for round in 0..R-1:
-       a. per rod: newtonRound(r)                              // real-mass dynamics advance x/dNodeQ
+       a. per rod: beamNewtonRound(r)                          // real-mass dynamics advance x/dNodeQ
        b. project ALL constraints in the beam inverse-mass metric:
             each rod: wall normal + segment + self → translational friction → SPIN friction on dNodeQ
             if coax: solveCoaxialNormalContact + friction (+ centering)   ← runs BEFORE any finalize → kills F2
           re-apply anchorInletDirect
-  4. per rod: finalizeVelocities(r, snap[r], dts) ONCE → re-zero dVel[0]/dOmega[0] → segmentFramesFromNodal(dNodeQ→q)
+  4. per rod: finalizeBeamSubstep(r, snap[r], dts) ONCE → re-zero dVel[0]/dOmega[0] → segmentFramesFromNodal(dNodeQ→q)
 ```
 
 Because the snapshot is **per-`BeamState`**, the module-level `_xN/_qN` scratch that forced "finalize
@@ -316,10 +385,11 @@ Every phase re-runs the Phase-0 gates **and** the unchanged legacy Stage-5 XPBD 
 ### Phase 0 — Verification scaffold first (F7, F8)
 Make the shipped path the tested path and define the assertions that guard every later phase, before
 touching physics.
-- Export `SHIPPED_GUIDEWIRE = GUIDEWIRE_DIRECT`, `SHIPPED_SHEATH = SHEATH_DIRECT`; point
-  `Viewport.tsx` **and** every integration suite at the same symbols (no behavior change).
-- Point `cosserat.test.ts` `buildAppAssembly` (~`:653`) at the DIRECT presets so the Stage-6
-  "exactly as Viewport does" suite actually runs `stepDirectCoax` on real anatomy.
+- Keep `SHIPPED_GUIDEWIRE` / `SHIPPED_SHEATH` as the single live-app source of truth; point
+  `Viewport.tsx` **and** every integration suite at the same symbols.
+- The attempted direct alias flip is now a Phase-5 ship decision gated on compliant feed plus coupled
+  direct contact; app-level Stage-6 tests remain "exactly as Viewport does" on the current shipped
+  aliases.
 - Add `rod.maxWallPenetration()` / `assertContained()` from `R_eff = R_lumen − rodRadius − EPS_C`.
 - Add the tightened containment gate **on curved `buildNormalAnatomy`** (a new `CoaxialAssembly`
   DIRECT test), **not** on the straight over-feed tube (see §6 — straight-tube buckling is a deferred
@@ -373,8 +443,9 @@ this phase — the new balance is *more* correct, but its numbers shift.
   direct path returns `node < fixedPrefix ? 0 : 1/dMass.m[node]`. `invInertiaAt` must index `dMass.Jt`
   by **node index**, not segment index (critique: index-space bug).
 - **Keep the `outerMassScale` parameter** on `solveCoaxialNormalContact` (default 1.0); the direct
-  path passes 1.0 and gets its ratio from `invMassAt`, while the legacy call site keeps passing
-  `COAX_OUTER_MASS_SCALE`. (Deleting the param breaks the legacy coax call site — see §6.)
+  path currently passes `0` to keep the sheath as the radial support surface until Schur contact
+  lands, while the legacy call site keeps passing `COAX_OUTER_MASS_SCALE`. (Deleting the param breaks
+  the legacy coax call site — see §6.)
 - Re-tune `COAX_ALPHA_N` — and budget for **conditioning**, not just convergence rate: a near-rigid
   3-body coax normal is ill-conditioned by design (`cosserat.ts:1491-1498`), and `gradMass` shifts by
   ~1/m (potentially 1–2 orders).
@@ -383,11 +454,11 @@ this phase — the new balance is *more* correct, but its numbers shift.
   regression with no direct-path coverage yet (critique ordering hazard).
 
 ### Phase 4 — Unified staggered driver (F2, F4, F6) — *riskiest phase*
-- `dynamic.ts`: add `beginSubstep`/`newtonRound`/`finalizeVelocities` with a **per-`BeamState`
+- `dynamic.ts`: add `beginBeamSubstep`/`beamNewtonRound`/`finalizeBeamSubstep` with a **per-`BeamState`
   `SubstepSnapshot`**, and thread that snapshot into `assembleTangent` (twist-axis freeze at `_qN`)
   and `residualSolveApply` (`_xN/_qN/_vN/_wN`) — **not just `finalizeVelocities`** (critique: a
   finalize-only snapshot lets interleaved `newtonRound(outer)`/`newtonRound(inner)` cross-contaminate
-  each rod's inertia residual).
+  each rod's inertia residual). **Done; the direct coordinator consumes these primitives.**
 - `cosserat.ts`: add `runStaggeredSubstep`; `directSubstep` → `wrapper([this])`, `stepDirectCoax` →
   `wrapper([outer, inner] + coupling)`. Compute the coax portal once in `buildCoaxContacts`; the inner
   wall-clip reads the same value (**F4 dissolved**). Move coax projection **inside** the staggered
@@ -457,9 +528,9 @@ are not lost in implementation:
    `finalizeVelocities`.** Otherwise interleaved `newtonRound` calls solve each rod against the other
    rod's snapshot. *(Phase 4)*
 3. **Do not delete the `outerMassScale` parameter** from `solveCoaxialNormalContact` — the legacy
-   `stepCoaxial` still passes it. Keep the param (direct passes 1.0); the metric comes from
-   `invMassAt`. As originally written this was a compile/runtime break of the legacy coax path, so the
-   "legacy stays green by construction" claim was **false**. *(Phase 3)*
+   `stepCoaxial` still passes it, and the direct path intentionally uses it to keep radial support
+   one-way until coupled contact lands. As originally written this was a compile/runtime break of the
+   legacy coax path, so the "legacy stays green by construction" claim was **false**. *(Phase 3)*
 4. **Spin-friction on `dNodeQ` is not a drop-in** — the roll angle, director reference, and
    `c.rollAnchor` are defined in segment-frame space. Redefine them in node space and add an
    equivalence test. *(Phase 4)*

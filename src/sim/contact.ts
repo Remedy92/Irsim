@@ -46,6 +46,8 @@ export interface NodeContactTarget {
   w: number[];
   wq: number[];
   rodRadius: number;
+  invMassAt(node: number): number;
+  invInertiaAt(node: number): number;
 }
 
 /** Wrap an angle to (−π, π]. */
@@ -130,7 +132,7 @@ export function solveNormalContact(rod: NodeContactTarget, c: Contact, dtSeconds
   const Cn = c.allowedRadius - rho; // ≥ 0 required (inside the lumen)
   // Early-out: separated AND no stored normal load ⇒ nothing to do (true inequality).
   if (Cn >= 0 && c.lambdaN <= 0) return;
-  const w = rod.w[c.node];
+  const w = rod.invMassAt(c.node);
   if (w <= 0) return;
   const aTilde = c.alphaN / (dtSeconds * dtSeconds);
   // ∇C_n = −n ⇒ |∇C_n|² = 1; gradient-mass = w.
@@ -164,7 +166,7 @@ export function solveTranslationalFriction(rod: NodeContactTarget, c: Contact, d
     return;
   }
   const p = rod.x[c.node];
-  const w = rod.w[c.node];
+  const w = rod.invMassAt(c.node);
   if (w <= 0) return;
 
   // tangent-plane basis: t1 = vessel tangent (projected off the current normal), t2 = n×t1
@@ -296,7 +298,7 @@ export function solveSpinFriction(rod: NodeContactTarget, c: Contact, dtSeconds:
   const seg = c.segment;
   if (seg < 0 || seg >= rod.q.length) return;
   const q = rod.q[seg];
-  const wq = rod.wq[seg];
+  const wq = rod.invInertiaAt(seg);
   if (wq <= 0) return;
   const r = rod.rodRadius;
   const psi = rollAngleAgainstWall(q, c.normal, c.vesselTangent);
