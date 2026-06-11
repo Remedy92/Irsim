@@ -365,8 +365,13 @@ function residualSolveApply(
     }
   }
   for (let f = 0; f < state.fixedPrefix; f++) for (let d = 0; d < 6; d++) _rhs[6 * f + d] = 0; // rhs-clamp
-  const ok = solver.solve(n, 6, _lower, _diag, _upper, _rhs, _du);
-  if (!ok) return 0;
+  let ok = solver.solve(n, 6, _lower, _diag, _upper, _rhs, _du);
+  if (!ok) {
+    // Near-singular pivot blocks (FP noise / heavy contact) must not masquerade as convergence.
+    for (let i = state.fixedPrefix; i < n; i++) for (let d = 0; d < 6; d++) _diag[i][d * 6 + d] += 1e-2;
+    ok = solver.solve(n, 6, _lower, _diag, _upper, _rhs, _du);
+  }
+  if (!ok) return Number.POSITIVE_INFINITY;
   let resInf = 0;
   for (let i = 0; i < n; i++) {
     if (i < state.fixedPrefix) continue;
