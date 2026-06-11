@@ -22,7 +22,8 @@ import {
   Vector3,
   WebGLRenderTarget
 } from "three";
-import { buildNormalAnatomy } from "../sim/anatomy";
+import { buildAnatomy } from "../sim/anatomy";
+import { compileAnatomy } from "../sim/anatomyDoc";
 import { CoaxialAssembly, CosseratRod, SHIPPED_GUIDEWIRE, SHIPPED_SHEATH } from "../sim/cosserat";
 import type { DeviceId } from "../sim/store";
 import { useSim } from "../sim/store";
@@ -165,7 +166,15 @@ function Engine() {
   const gl = useThree((s) => s.gl);
   const size = useThree((s) => s.size);
 
-  const anatomy = useMemo(() => buildNormalAnatomy(), []);
+  // Reactive on the selected variant / loaded sidecar so switching anatomy recompiles the lumen +
+  // rebuilds the scene meshes and instruments (the assembly + rig memos below are keyed on `anatomy`).
+  // A loaded sidecar (the ingestion-pipeline output format) supersedes the built-in variant.
+  const variantId = useSim((s) => s.variantId);
+  const loadedDoc = useSim((s) => s.loadedDoc);
+  const anatomy = useMemo(
+    () => (loadedDoc ? compileAnatomy(loadedDoc) : buildAnatomy(variantId)),
+    [loadedDoc, variantId]
+  );
   const physicsMode: PhysicsMode = "direct";
 
   // The chosen access side (right/left common femoral). Reactive so picking a different start

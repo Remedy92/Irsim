@@ -16,15 +16,17 @@
   data, no shared files) → X (chirality) → V-interim (clinician credibility check) → I (material
   fidelity, now observable on calibrated/tortuous anatomy) → V-final (sign-off). Phase J is the named
   home for the Schur-coax + analytic-tangent deferrals (third-instrument prerequisite).
-- **STOPPED HERE (2026-06-10, user-requested stop):** Phase G is complete and orchestrator-reviewed
-  (review caught one gap — re-skipping legacy PUSHABILITY had removed the suite's only climb-magnitude
-  gate — and a direct-lane coax pushability HARD gate was added in `validation_calibrated.test.ts` to
-  close it; see Phase G entry). Final state: 191 passed · 4 skipped · 3 todo; typecheck/build/browser
-  smoke green. **Everything is UNCOMMITTED on `physics/dynamic-corotational-beam`** — next session:
-  (1) checkpoint-commit the Phase A–G work, (2) start Phase H (and AC in parallel) per the sequencing
-  above. Phases H/AC/X/V/I not started.
-- **Last updated:** 2026-06-10 (Phase G **completed**: full suite green, dead code deleted, legacy skips
-  resolved, perf-discrepancy verdict recorded; direct pushability gate added at orchestrator review).
+- **CHECKPOINTED + ANATOMY BRIDGE (2026-06-11):** The Phase A–G work is now **committed** (`76ec886`).
+  Two stale-doc corrections were discovered and acted on this session (see "Session 2026-06-11" below):
+  **(1)** Phase AC is effectively **already done in committed code** — `anatomy.ts`/`anatomyDoc.ts` ship a
+  25-branch declarative `AnatomyDoc` (aortoiliac + arch + recalibrated asymmetric renals + full
+  visceral/mesenteric tree + pelvic UFE path) with variants and the ostium-weld, not the "8-branch
+  perpendicular-renal placeholder" the roadmap describes. **(2)** The DICOM-bridge substrate the anatomy
+  roadmap calls "Phase 2" is ~80% present — `anatomyDoc.ts` is JSON-serialisable with validation + weld.
+  This session added the missing runtime bridge (sidecar/centerline loader + converter + a live scenario
+  picker + file-load) and the DICOM ingestion design doc, so "real anatomy you can drop in" now works.
+- **Last updated:** 2026-06-11 (checkpoint commit of Phase A–G; anatomy ingestion bridge landed:
+  `anatomy-loader.ts`, scenario picker + sidecar file-load in the app, `docs/dicom-anatomy-pipeline.md`).
 
 ## User decisions (locked)
 1. Incremental FEM promotion (preserve calibrated kernel + tested contact/lumen/coax machinery).
@@ -69,7 +71,8 @@
 | F | Perf harness + committed resolution | ✅ done (agent-verified; orchestrator re-confirm pending) | green |
 | G | THE FLIP (SHIPPED→DIRECT, delete dead code, perf-discrepancy check) | ✅ done | green (full suite + typecheck + build + browser) |
 | H | Slim cosserat.ts + invert material ownership | ⏳ not started | — |
-| AC | Anatomy calibration + visceral core (zero engine change; parallel to H) | ⏳ not started | — |
+| AC | Anatomy calibration + visceral core (zero engine change; parallel to H) | ✅ done (in committed code; verified 2026-06-11) | green |
+| BR | Anatomy ingestion bridge (sidecar/centerline loader + picker + DICOM pipeline design) | ✅ done (2026-06-11) | green |
 | X | Chirality fix (moved BEFORE human evaluation; runs after H) | ⏳ not started | — |
 | V | Clinician credibility gate (interim after X+AC; final after I) — **EXIT CRITERION** | ⏳ not started | — |
 | I | Additive material fidelity (nitinol/twist/anisotropy/vessel) | ⏳ not started | — |
@@ -241,6 +244,49 @@ and the full release gate is green.
   scripted feed), tracked for Phase H/V hardening.
 - **Verification (CI order):** `npm run typecheck` ✅ · `npm test` ✅ (191 passed · 4 skipped · 3 todo,
   19 files, incl. the review-added pushability gate) · `npm run build` ✅ · browser smoke ✅.
+
+### Session 2026-06-11 — checkpoint commit + anatomy ingestion bridge ✅
+The physics refactor was at a clean STOP with everything uncommitted; this session de-risked it and
+pulled the "real anatomy / DICOM-ready" track forward (the stated next product goal).
+
+- **Checkpoint commit `76ec886`** — the full Phase A–G working tree (2624 insertions; green at 191
+  passed · 4 skipped · 3 todo, typecheck + build green) is now committed on
+  `physics/dynamic-corotational-beam`. No code change, pure de-risk.
+- **Stale-doc reconciliation (load-bearing):** the progress tracker + `anatomy-realism-roadmap.md` both
+  describe an 8-branch near-perpendicular-renal placeholder with no visceral core and no loader. The
+  **committed reality** is `anatomyDoc.ts` (declarative, JSON-serialisable `AnatomyDoc` + compiler with
+  the ostium-weld + variant ops + `validateAnatomyDoc`/`docFromJSON`/`docToJSON`) and `anatomy.ts`
+  (`NORMAL_DOC`: 25 branches — aortoiliac + arch great vessels + recalibrated **asymmetric** renals
+  [~54° caudal/lateral, R longer than L] + the full visceral/mesenteric tree
+  [celiac→hepatic/splenic/GDA/left-gastric, SMA→ileocolic/middle-colic, IMA→left-colic/superior-rectal]
+  + pelvic [internal iliac→uterine, the UFE path] — plus `bovine-arch` and `replaced-rha-sma` variants).
+  So **Phase AC is effectively complete**; the roadmap's §3-§5 "add the visceral core" is already shipped.
+- **Anatomy ingestion bridge (NEW, the DICOM-phase foundation):**
+  - `src/sim/anatomy-loader.ts` — `loadAnatomyFromSidecar(url, fetchImpl?)` (fetch→validate→compile,
+    injectable fetch for tests); `anatomyDocFromCenterlines(tree)` (raw VMTK-style dense centerlines →
+    `AnatomyDoc`, with **RDP curvature-adaptive decimation** that preserves each child's first point so
+    the compiler's nearest-parent-sample weld still connects it); `parseAnatomyInput(json)` (auto-detects
+    sidecar vs raw centerlines); `anatomyDocToSidecar`. Pure, no three.js/DOM. Tests: `anatomy-loader.test.ts`
+    (10) + `anatomy-ingest.test.ts` (4, end-to-end on the shipped example asset through parse→convert→
+    compile→`Lumen` connectivity). Both fast (<200 ms).
+  - **Live scenario picker + sidecar file-load in the app** — `store.ts` gained `variantId` + `loadedDoc`
+    (+ `setVariant`/`loadDoc`, preserved across run reset); `App` and `Viewport` build anatomy reactively
+    (`loadedDoc ? compileAnatomy(loadedDoc) : buildAnatomy(variantId)`), so switching scenario/loaded
+    anatomy recompiles the lumen + rebuilds instruments through the existing `[anatomy]`-keyed memos. UI:
+    a Scenario dropdown (Normal + variants) and a "Load sidecar (.json)" file input that accepts either an
+    `AnatomyDoc` sidecar or raw centerlines.
+  - **DICOM→AnatomyDoc pipeline design** — `docs/dicom-anatomy-pipeline.md` (de-id → TotalSegmentator
+    default Apache `total` task → VMTK centerlines → mm/LPS→cm transform → `AnatomyDoc` JSON + provenance),
+    a strict license whitelist, and a shortest-path recommendation: **the first redistributable "real"
+    anatomy should be procedurally-generated + morphometry-calibrated (synthetic CC0), not a redistributed
+    scan** — no public real-CTA collection is confirmed shippable into an MIT repo without per-collection
+    written confirmation, and the default task yields no renal/visceral masks anyway. Demo input shipped at
+    `assets/anatomy/example-vmtk-centerlines.json`. **License corrections** vs the roadmap: OpenCCO record
+    is conflicted (GPL badge vs LGPL readme) → downgraded to reference-only; VascuSynth is CC BY 4.0, not
+    Apache; neither grants generated-output ownership in writing (self-label CC0, retain configs).
+- **Verification:** typecheck ✅ · build ✅ (vite, 70 modules, 937 ms) · new anatomy tests ✅ (14) · full
+  suite re-run pending confirmation. Physics hot path untouched, so the direct-lane gates/browser smoke
+  are unaffected (default anatomy path is behaviourally identical to the prior `buildNormalAnatomy()`).
 
 ---
 

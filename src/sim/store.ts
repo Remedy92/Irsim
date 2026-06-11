@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AnatomyDoc } from "./anatomyDoc";
 import type { DeviceId, KeyLayout } from "./controls";
 
 export type ViewMode = "3d" | "fluoro";
@@ -29,6 +30,12 @@ interface SimState {
   /** Vascular access site id (e.g. "rcfa" right / "lcfa" left common femoral). Choosing the
    * start side rebuilds the instruments at that femoral artery. */
   accessId: string;
+  /** Active anatomy variant id (from ANATOMY_VARIANTS), or undefined for the normal anatomy.
+   * Switching it recompiles the anatomy in both panels, which rebuilds the lumen + instruments. */
+  variantId: string | undefined;
+  /** An externally-loaded anatomy document (a JSON sidecar — the format the DICOM/centerline
+   * ingestion pipeline emits). When non-null it supersedes the built-in variant. */
+  loadedDoc: AnatomyDoc | null;
   /** Bumped whenever the current run should be rebuilt from fresh device seeds. */
   runSeq: number;
 
@@ -49,6 +56,11 @@ interface SimState {
 
   set: (p: Partial<SimState>) => void;
   setAccess: (accessId: string) => void;
+  /** Select an anatomy variant (or undefined for normal); restarts the run on the new anatomy.
+   * Clears any externally-loaded sidecar (built-in variants and a loaded doc are exclusive). */
+  setVariant: (variantId: string | undefined) => void;
+  /** Load an external anatomy sidecar (supersedes the variant), or null to clear it. */
+  loadDoc: (doc: AnatomyDoc | null) => void;
   select: (device: DeviceId) => void;
   setLayout: (layout: KeyLayout) => void;
   /** Advance (+) / retract (−) one device's deployed length by `d` cm. */
@@ -78,6 +90,8 @@ const DEFAULTS = {
   rao: 0,
   cranial: 0,
   accessId: "rcfa",
+  variantId: undefined as string | undefined,
+  loadedDoc: null as AnatomyDoc | null,
   runSeq: 0,
   selected: "wire" as DeviceId,
   layout: "qwerty" as KeyLayout,
@@ -98,6 +112,14 @@ export const useSim = create<SimState>((set) => ({
   // artery in the Viewport); keep chrome (view, layout, C-arm, target) but reset device pose.
   setAccess: (accessId) =>
     set((s) => ({ accessId, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
+
+  // Switching anatomy recompiles the lumen + rebuilds the instruments (both panels are keyed on
+  // the variant), so start the run fresh — same reseed contract as changing the access side.
+  setVariant: (variantId) =>
+    set((s) => ({ variantId, loadedDoc: null, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
+
+  loadDoc: (loadedDoc) =>
+    set((s) => ({ loadedDoc, variantId: undefined, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
 
   select: (device) => set({ selected: device }),
   setLayout: (layout) => set({ layout }),
@@ -126,12 +148,14 @@ export const useSim = create<SimState>((set) => ({
   inject: () => set((s) => ({ injectSeq: s.injectSeq + 1 })),
   setMetrics: (m) => set({ metrics: m }),
 
-  // Reset the run, preserving the operator's setup choices (access side and keyboard layout).
+  // Reset the run, preserving the operator's setup choices (access side, anatomy, keyboard layout).
   reset: () =>
     set((s) => ({
       ...DEFAULTS,
       runSeq: s.runSeq + 1,
       accessId: s.accessId,
+      variantId: s.variantId,
+      loadedDoc: s.loadedDoc,
       layout: s.layout,
       ...freshDevices(),
       metrics: freshMetrics()

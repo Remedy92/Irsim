@@ -1,5 +1,7 @@
-import { useEffect, useMemo } from "react";
-import { buildNormalAnatomy } from "./sim/anatomy";
+import { useEffect, useMemo, useState } from "react";
+import { ANATOMY_VARIANTS, buildAnatomy } from "./sim/anatomy";
+import { compileAnatomy } from "./sim/anatomyDoc";
+import { parseAnatomyInput } from "./sim/anatomy-loader";
 import { keyHints, resolveAction } from "./sim/controls";
 import { useSim } from "./sim/store";
 import { Viewport } from "./three/Viewport";
@@ -143,12 +145,13 @@ function DeviceDeck({
 }
 
 export function App() {
-  const anatomy = useMemo(() => buildNormalAnatomy(), []);
   const {
     view,
     rao,
     cranial,
     accessId,
+    variantId,
+    loadedDoc,
     wire,
     sheath,
     selected,
@@ -157,6 +160,8 @@ export function App() {
     metrics,
     set,
     setAccess,
+    setVariant,
+    loadDoc,
     select,
     setLayout,
     advance,
@@ -165,6 +170,27 @@ export function App() {
     inject,
     reset
   } = useSim();
+  // Recompiled when the operator picks a different scenario or loads a sidecar; the Viewport is
+  // keyed on the same store state. A loaded sidecar supersedes the built-in variant.
+  const anatomy = useMemo(
+    () => (loadedDoc ? compileAnatomy(loadedDoc) : buildAnatomy(variantId)),
+    [loadedDoc, variantId]
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Load anatomy (.json) the operator drops in — the manual stand-in for the DICOM→centerline
+  // ingestion pipeline output. Accepts either a compiled AnatomyDoc sidecar OR raw VMTK-style
+  // centerlines (auto-detected + converted), validating before swapping the live anatomy.
+  const onLoadSidecar = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const doc = parseAnatomyInput(await file.text());
+      loadDoc(doc);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   // Keyboard: the wire and sheath are driven by separate, always-live key clusters (WASD/ZQSD
   // for the wire, arrows for the sheath), resolved through the pure mapping so the active layout
@@ -253,6 +279,33 @@ export function App() {
             </button>
           </div>
           <p className="hint">{access.name}. Changing the side restarts the run there.</p>
+
+          <h3>Scenario · anatomy</h3>
+          <select
+            value={loadedDoc ? "loaded" : variantId ?? "normal"}
+            onChange={(e) => setVariant(e.target.value === "normal" ? undefined : e.target.value)}
+          >
+            <option value="normal">Normal anatomy</option>
+            {ANATOMY_VARIANTS.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+            {loadedDoc ? <option value="loaded">Loaded · {loadedDoc.name}</option> : null}
+          </select>
+          <label className="loadrow">
+            <span>Load sidecar (.json)</span>
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={(e) => {
+                void onLoadSidecar(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {loadError ? <p className="hint err">Could not load anatomy: {loadError}</p> : null}
+          <p className="hint">Switching the scenario recompiles the vessel tree and restarts the run. A loaded sidecar is the format the DICOM ingestion pipeline emits.</p>
 
           <h3>Target</h3>
           <select value={targetId} onChange={(e) => set({ targetId: e.target.value })}>
