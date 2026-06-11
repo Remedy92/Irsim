@@ -221,3 +221,97 @@ describe("synthetic-hepatic-tree variant — procedurally-grown distal anatomy i
     expect(anatomy.branches.some((b) => b.id === target!.viaBranchId)).toBe(true);
   });
 });
+
+describe("pathology variants — disease states compile, stay connected, and take effect", () => {
+  const PATHOLOGY = ["aaa-infrarenal", "renal-stenosis-l", "accessory-renal-r", "tortuous-iliac-r"];
+
+  const maxRadius = (b: VesselBranch) => b.points.reduce((m, p) => Math.max(m, p.radius), 0);
+  const minRadius = (b: VesselBranch) => b.points.reduce((m, p) => Math.min(m, p.radius), Infinity);
+
+  for (const id of PATHOLOGY) {
+    it(`${id}: compiles with finite, radius-positive, arc-monotonic centerlines`, () => {
+      const anatomy = buildAnatomy(id);
+      for (const br of anatomy.branches) {
+        let prevS = -Infinity;
+        for (const p of br.points) {
+          expect(Number.isFinite(p.pos.x) && Number.isFinite(p.pos.y) && Number.isFinite(p.pos.z)).toBe(true);
+          expect(p.radius).toBeGreaterThan(0);
+          expect(p.s).toBeGreaterThanOrEqual(prevS);
+          prevS = p.s;
+        }
+      }
+    });
+
+    it(`${id}: keeps every renal/visceral/pelvic ostium welded to its parent (no orphan from the reshape)`, () => {
+      const anatomy = buildAnatomy(id);
+      const lumen = new Lumen(anatomy);
+      for (const [child, parent] of Object.entries(PARENT_OF)) {
+        const idx = lumen.edges.findIndex((e) => e.branchId === child);
+        expect(idx, `no edge for ${child} in ${id}`).toBeGreaterThanOrEqual(0);
+        const touchesParent = lumen.edges[idx].adjacent.some((j) => lumen.edges[j].branchId === parent);
+        expect(touchesParent, `${child} ostium not welded to ${parent} in ${id}`).toBe(true);
+      }
+    });
+  }
+
+  it("aaa-infrarenal: the infrarenal aorta is aneurysmal (radius bulges well past normal)", () => {
+    const aorta = buildAnatomy("aaa-infrarenal").branches.find((b) => b.id === "aorta")!;
+    expect(maxRadius(aorta)).toBeGreaterThan(1.6); // normal abdominal aorta r<=~1.0
+    expect(minRadius(aorta)).toBeGreaterThan(0); // necks stay patent
+  });
+
+  it("renal-stenosis-l: the left renal lumen pinches to a tight stenosis with patent distal", () => {
+    const renal = buildAnatomy("renal-stenosis-l").branches.find((b) => b.id === "renal_l")!;
+    expect(minRadius(renal)).toBeLessThan(0.13); // tight ostial/proximal stenosis (~2 mm)
+    expect(maxRadius(renal)).toBeGreaterThan(0.22); // post-stenotic dilation / normal distal
+  });
+
+  it("accessory-renal-r: adds a separately-cannulated lower-pole renal branch + target, welded to the aorta", () => {
+    const anatomy = buildAnatomy("accessory-renal-r");
+    expect(anatomy.branches.some((b) => b.id === "renal_r_acc")).toBe(true);
+    const target = anatomy.targets.find((t) => t.id === "t_renal_r_acc");
+    expect(target, "missing accessory renal target").toBeTruthy();
+    expect(target!.viaBranchId).toBe("renal_r_acc");
+    const lumen = new Lumen(anatomy);
+    const idx = lumen.edges.findIndex((e) => e.branchId === "renal_r_acc");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(lumen.edges[idx].adjacent.some((j) => lumen.edges[j].branchId === "aorta")).toBe(true);
+  });
+
+  it("tortuous-iliac-r: the right iliac gains curvature but preserves the femoral access endpoint", () => {
+    const normal = buildNormalAnatomy().branches.find((b) => b.id === "iliac_r")!;
+    const tort = buildAnatomy("tortuous-iliac-r").branches.find((b) => b.id === "iliac_r")!;
+    // a tortuous path is longer than the near-straight normal iliac of the same span
+    expect(tort.points[tort.points.length - 1].s).toBeGreaterThan(normal.points[normal.points.length - 1].s);
+    // the access endpoint (R common femoral) is preserved
+    const tip = tort.points[tort.points.length - 1].pos;
+    expect(tip.distanceTo(new Vector3(-3.8, -11.5, -0.2))).toBeLessThan(0.4);
+  });
+
+  it("peripheral-runoff-l: the leg tree welds into the lumen graph from the left CFA down to the tibials", () => {
+    const anatomy = buildAnatomy("peripheral-runoff-l");
+    const lumen = new Lumen(anatomy);
+    // each runoff branch's ostium must touch its declared parent (a connected leg, navigable by crossover)
+    const PARENT: Record<string, string> = {
+      sfa_l: "iliac_l",
+      profunda_l: "sfa_l",
+      popliteal_l: "sfa_l",
+      at_l: "popliteal_l",
+      tpt_l: "popliteal_l",
+      pt_l: "tpt_l",
+      peroneal_l: "tpt_l"
+    };
+    for (const [child, parent] of Object.entries(PARENT)) {
+      const idx = lumen.edges.findIndex((e) => e.branchId === child);
+      expect(idx, `no edge for ${child}`).toBeGreaterThanOrEqual(0);
+      expect(lumen.edges[idx].adjacent.some((j) => lumen.edges[j].branchId === parent), `${child} not welded to ${parent}`).toBe(true);
+    }
+    // the runoff reaches the tibial level (well caudal to the femoral access)
+    const at = anatomy.branches.find((b) => b.id === "at_l")!;
+    expect(at.points[at.points.length - 1].pos.y).toBeLessThan(-44);
+    // exposes BTK targets
+    for (const t of ["t_popliteal_l", "t_at_l", "t_pt_l"]) {
+      expect(anatomy.targets.some((x) => x.id === t), `missing target ${t}`).toBe(true);
+    }
+  });
+});

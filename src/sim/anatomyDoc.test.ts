@@ -92,11 +92,16 @@ describe("anatomyDoc — validation rejects malformed documents", () => {
 });
 
 describe("anatomyDoc — anatomical variants", () => {
-  it("exposes the bovine arch, replaced-RHA, and synthetic-hepatic-tree variants", () => {
+  it("exposes the arch/hepatic variants plus the pathology scenarios", () => {
     expect(ANATOMY_VARIANTS.map((v) => v.id).sort()).toEqual([
+      "aaa-infrarenal",
+      "accessory-renal-r",
       "bovine-arch",
+      "peripheral-runoff-l",
+      "renal-stenosis-l",
       "replaced-rha-sma",
-      "synthetic-hepatic-tree"
+      "synthetic-hepatic-tree",
+      "tortuous-iliac-r"
     ]);
   });
 

@@ -99,6 +99,19 @@ export type VariantOp =
     }
   | { op: "removeBranch"; branch: string }
   | { op: "addBranch"; spec: BranchSpec }
+  | {
+      /**
+       * Replace a branch's control points in place WITHOUT changing its parentage — for pathology
+       * (aneurysmal dilation, stenosis, added tortuosity) on an existing vessel, including the root
+       * aorta (which `reparent` cannot touch). `ostiumNear`/`ostiumR` are honoured for a child
+       * branch (re-welds the ostium); ignored for a root.
+       */
+      op: "reshape";
+      branch: string;
+      controls: CtrlSpec[];
+      ostiumNear?: [number, number, number];
+      ostiumR?: number;
+    }
   | { op: "setAttenuation"; branch: string; value: number }
   | { op: "addTarget"; spec: TargetSpec }
   | { op: "removeTarget"; target: string };
@@ -249,6 +262,13 @@ export function applyVariant(base: AnatomyDoc, variant: VariantSpec): AnatomyDoc
           throw new Error(`variant ${variant.id}: addBranch duplicate id "${op.spec.id}"`);
         }
         doc.branches.push(op.spec);
+        break;
+      }
+      case "reshape": {
+        const b = findBranch(op.branch);
+        b.controls = op.controls;
+        if (op.ostiumNear) b.ostiumNear = op.ostiumNear;
+        if (op.ostiumR !== undefined) b.ostiumR = op.ostiumR;
         break;
       }
       case "setAttenuation": {

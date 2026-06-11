@@ -537,6 +537,250 @@ export const ANATOMY_VARIANTS: VariantSpec[] = [
       }
     ]
   },
+
+  // --- Pathology scenarios (the disease-state skills, expressed by reshaping existing vessels). The
+  // single-radius lumen represents concentric disease faithfully: a fusiform aneurysm is a radius
+  // bulge; an ostial stenosis is a radius pinch with post-stenotic dilation; tortuosity is added
+  // waviness. Each preserves the welded ostia + femoral access endpoints so the graph stays connected.
+  {
+    id: "aaa-infrarenal",
+    name: "Infrarenal abdominal aortic aneurysm",
+    note:
+      "A fusiform infrarenal AAA (~3.8 cm sac) below the renal arteries with a proximal + distal neck — " +
+      "the substrate for EVAR planning. The renal/visceral ostia and the aortic neck are preserved, so " +
+      "selective work above the sac is unchanged while the infrarenal aorta is aneurysmal.",
+    ops: [
+      {
+        op: "reshape",
+        branch: "aorta",
+        controls: [
+          { p: [0.0, 0.0, 0.0], r: 0.85 }, // bifurcation (normal)
+          { p: [0.1, 3.0, 0.3], r: 1.0 }, // distal neck
+          { p: [0.15, 5.5, 0.5], r: 1.9 }, // aneurysm sac (max, ~3.8 cm)
+          { p: [0.1, 8.0, 0.7], r: 1.85 }, // sac
+          { p: [0.0, 10.5, 0.8], r: 1.1 }, // proximal neck (tapering below renals)
+          { p: [-0.2, 13.5, 0.6], r: 0.96 }, // renal level (preserved)
+          { p: [0.0, 19.0, 0.2], r: 1.02 }, // diaphragm
+          { p: [0.3, 26.0, -0.4], r: 1.1 }, // descending thoracic
+          { p: [0.6, 31.5, -1.2], r: 1.22 }, // distal arch
+          { p: [-0.4, 34.2, -0.2], r: 1.28 }, // arch apex
+          { p: [-1.4, 32.5, 1.6], r: 1.42 } // ascending aorta / root
+        ]
+      }
+    ]
+  },
+  {
+    id: "renal-stenosis-l",
+    name: "Ostial left renal artery stenosis",
+    note:
+      "A tight ostial + proximal left renal artery stenosis with post-stenotic dilation — atherosclerotic " +
+      "renovascular hypertension, the classic renal-stent target. Engaging the ostium then crossing the " +
+      "stenosis with the wire is the skill; the lumen narrows to ~2 mm at the lesion.",
+    ops: [
+      {
+        op: "reshape",
+        branch: "renal_l",
+        ostiumNear: [-0.2, 13.5, 0.6],
+        ostiumR: 0.1, // tight ostial stenosis (~2 mm)
+        controls: [
+          { p: [0.8, 13.35, 0.3], r: 0.09 }, // post-ostial stenosis (tightest point)
+          { p: [2.2, 13.0, 0.0], r: 0.27 }, // post-stenotic dilation
+          { p: [4.0, 12.3, -0.6], r: 0.25 } // hilum (normal)
+        ]
+      }
+    ]
+  },
+  {
+    id: "accessory-renal-r",
+    name: "Accessory right renal artery (lower pole)",
+    note:
+      "A second, lower-pole right renal artery (~21-31% prevalence) arising from the aorta below the main " +
+      "renal — important for selective renal embolization and EVAR planning (a missed accessory feeds an " +
+      "endoleak). Adds a small, separately-cannulated ostium + target.",
+    ops: [
+      {
+        op: "addBranch",
+        spec: {
+          id: "renal_r_acc",
+          name: "Right accessory renal artery (lower pole)",
+          attenuation: 0.6,
+          samples: 28,
+          parent: "aorta",
+          ostiumNear: [-0.1, 11.2, 0.75],
+          ostiumR: 0.15,
+          controls: [
+            { p: [-1.8, 10.8, 0.3], r: 0.13 },
+            { p: [-3.6, 10.2, -0.2], r: 0.11 } // lower-pole hilum
+          ]
+        }
+      },
+      {
+        op: "addTarget",
+        spec: {
+          id: "t_renal_r_acc",
+          name: "Right accessory renal ostium",
+          via: "renal_r_acc",
+          ostiumOf: "renal_r_acc",
+          acceptance: 0.4
+        }
+      }
+    ]
+  },
+  {
+    id: "tortuous-iliac-r",
+    name: "Tortuous right common iliac",
+    note:
+      "A tortuous right common iliac (the femoral-access path) with anterior/posterior swings — common with " +
+      "age/atherosclerosis and a real determinant of access difficulty: the catheter must track the bends " +
+      "without prolapsing. The femoral access endpoint and the internal-iliac ostium are preserved.",
+    ops: [
+      {
+        op: "reshape",
+        branch: "iliac_r",
+        ostiumNear: [0.0, 0.0, 0.0],
+        ostiumR: 0.55,
+        controls: [
+          { p: [-2.2, -3.2, 0.7], r: 0.52 },
+          { p: [-3.6, -5.2, -0.8], r: 0.5 }, // posterior swing
+          { p: [-2.5, -7.2, 0.9], r: 0.5 }, // anterior loop
+          { p: [-4.2, -9.4, -0.6], r: 0.49 },
+          { p: [-3.8, -11.5, -0.2], r: 0.48 } // R common femoral (access endpoint preserved)
+        ]
+      }
+    ]
+  },
+
+  {
+    id: "peripheral-runoff-l",
+    name: "Left lower-extremity runoff (SFA → popliteal → tibials)",
+    note:
+      "The high-volume peripheral territory (PAD/CLI): the left superficial femoral artery continues " +
+      "the common femoral down the thigh into the popliteal, then the anterior-tibial / posterior-tibial " +
+      "/ peroneal trifurcation below the knee. Reachable antegrade from the left femoral OR via a " +
+      "contralateral crossover from the right femoral (up the right iliac, over the aortic bifurcation, " +
+      "down the left iliac) — a flagship endovascular skill. Far caudal to the abdomen: shift-drag to " +
+      "pan the table down the leg.",
+    ops: [
+      {
+        op: "addBranch",
+        spec: {
+          id: "sfa_l",
+          name: "Left superficial femoral artery",
+          attenuation: 0.6,
+          samples: 40,
+          parent: "iliac_l",
+          ostiumNear: [3.8, -11.5, -0.2],
+          ostiumR: 0.27,
+          controls: [
+            { p: [3.5, -16.0, -0.5], r: 0.26 },
+            { p: [3.1, -21.0, -0.8], r: 0.25 },
+            { p: [2.8, -26.0, -1.0], r: 0.24 },
+            { p: [2.6, -30.0, -1.0], r: 0.23 } // adductor hiatus (becomes popliteal)
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "profunda_l",
+          name: "Left profunda femoris (deep femoral)",
+          attenuation: 0.55,
+          samples: 24,
+          parent: "sfa_l",
+          ostiumNear: [3.5, -16.0, -0.5],
+          ostiumR: 0.22,
+          controls: [
+            { p: [4.6, -17.5, -1.4], r: 0.2 },
+            { p: [5.4, -20.5, -2.0], r: 0.18 }
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "popliteal_l",
+          name: "Left popliteal artery",
+          attenuation: 0.58,
+          samples: 28,
+          parent: "sfa_l",
+          ostiumNear: [2.6, -30.0, -1.0],
+          ostiumR: 0.23,
+          controls: [
+            { p: [2.4, -34.0, -1.3], r: 0.22 },
+            { p: [2.3, -37.0, -1.2], r: 0.21 } // trifurcation
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "at_l",
+          name: "Left anterior tibial artery",
+          attenuation: 0.5,
+          samples: 28,
+          parent: "popliteal_l",
+          ostiumNear: [2.3, -37.0, -1.2],
+          ostiumR: 0.14,
+          controls: [
+            { p: [2.0, -40.0, 0.4], r: 0.13 },
+            { p: [1.8, -47.0, 0.8], r: 0.11 } // anterior compartment → dorsalis pedis
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "tpt_l",
+          name: "Left tibioperoneal trunk",
+          attenuation: 0.5,
+          samples: 20,
+          parent: "popliteal_l",
+          ostiumNear: [2.3, -37.0, -1.2],
+          ostiumR: 0.16,
+          controls: [
+            { p: [2.4, -39.5, -1.6], r: 0.15 },
+            { p: [2.5, -41.0, -1.7], r: 0.14 } // PT + peroneal split
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "pt_l",
+          name: "Left posterior tibial artery",
+          attenuation: 0.5,
+          samples: 24,
+          parent: "tpt_l",
+          ostiumNear: [2.5, -41.0, -1.7],
+          ostiumR: 0.13,
+          controls: [
+            { p: [2.2, -45.0, -1.9], r: 0.12 },
+            { p: [2.0, -51.0, -1.6], r: 0.1 } // medial malleolus
+          ]
+        }
+      },
+      {
+        op: "addBranch",
+        spec: {
+          id: "peroneal_l",
+          name: "Left peroneal artery",
+          attenuation: 0.5,
+          samples: 24,
+          parent: "tpt_l",
+          ostiumNear: [2.5, -41.0, -1.7],
+          ostiumR: 0.12,
+          controls: [
+            { p: [3.0, -45.0, -1.6], r: 0.11 },
+            { p: [3.3, -50.0, -1.4], r: 0.1 }
+          ]
+        }
+      },
+      { op: "addTarget", spec: { id: "t_popliteal_l", name: "Left popliteal artery", via: "popliteal_l", ostiumOf: "popliteal_l", acceptance: 0.5 } },
+      { op: "addTarget", spec: { id: "t_at_l", name: "Left anterior tibial (BTK)", via: "at_l", ostiumOf: "at_l", acceptance: 0.4 } },
+      { op: "addTarget", spec: { id: "t_pt_l", name: "Left posterior tibial (BTK)", via: "pt_l", ostiumOf: "pt_l", acceptance: 0.4 } }
+    ]
+  },
+
   buildSyntheticHepaticVariant()
 ];
 

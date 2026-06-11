@@ -2152,6 +2152,37 @@ export const SHEATH_DIRECT: CosseratParams = { ...SHEATH, segments: 40, useDirec
 export const SHIPPED_GUIDEWIRE = GUIDEWIRE_DIRECT;
 export const SHIPPED_SHEATH = SHEATH_DIRECT;
 
+/**
+ * Selectable guidewire stiffness profiles — the real "which wire do I reach for?" decision in IR.
+ * Implemented purely via `bendComplianceScale` on the shipped guidewire (α_bend ∝ 1/EI, so the
+ * realised shaft EI = 12/scale N·cm²), which the direct beam reads through the material field. The
+ * scales {1, 0.5, 2} are exactly those the realised-EI cantilever gate already proves to within 5%
+ * (validation_calibrated.test.ts), and stay inside the solver's validated conditioning range — a soft
+ * EI=6 (scale 2) is the low end of the 0.035" working-wire band, not the extreme 6× drop that risks the
+ * Newton tangent. Navigation stability/containment for the non-default profiles is gated separately.
+ */
+export type GuidewireProfileId = "standard" | "stiff" | "soft";
+export interface GuidewireProfile {
+  id: GuidewireProfileId;
+  name: string;
+  /** Shorthand for the UI. */
+  short: string;
+  bendComplianceScale: number;
+  /** Approximate realised shaft EI (N·cm²) for display. */
+  shaftEiCm: number;
+}
+export const GUIDEWIRE_PROFILES: Record<GuidewireProfileId, GuidewireProfile> = {
+  standard: { id: "standard", name: "Standard 0.035″ working wire", short: "Standard", bendComplianceScale: 1, shaftEiCm: 12 },
+  stiff: { id: "stiff", name: "Stiff support wire (Amplatz-class)", short: "Stiff", bendComplianceScale: 0.5, shaftEiCm: 24 },
+  soft: { id: "soft", name: "Soft / steerable wire", short: "Soft", bendComplianceScale: 2, shaftEiCm: 6 }
+};
+export const GUIDEWIRE_PROFILE_IDS = Object.keys(GUIDEWIRE_PROFILES) as GuidewireProfileId[];
+/** The shipped guidewire preset specialised to a device-stiffness profile (default = standard). */
+export function guidewireForProfile(id: GuidewireProfileId): CosseratParams {
+  const p = GUIDEWIRE_PROFILES[id] ?? GUIDEWIRE_PROFILES.standard;
+  return { ...SHIPPED_GUIDEWIRE, bendComplianceScale: p.bendComplianceScale };
+}
+
 // =============================================================================================
 // STAGE 5 — COAXIAL SHEATH OVER WIRE (design doc §6)
 // =============================================================================================
@@ -2173,6 +2204,13 @@ const COAX_ALPHA_T = 1e-6;
  */
 const COAX_MU_STATIC = 0.04;
 const COAX_MU_KINETIC = 0.02;
+// Kept LOW (lubricated hydrophilic wire-in-catheter interface). An attempt to raise these toward the
+// wire↔WALL literature band (0.012/0.006, ~3×) was reverted after EMPIRICAL validation: the added
+// coax drag made the wire stall and buckle inside the sheath rather than telescope through it —
+// PUSHABILITY deep climb collapsed 43 cm → 10 cm (climb@36 ≈ climb@12, i.e. extra feed stopped
+// advancing the tip). The wire↔catheter interface is more lubricated than the wire↔wall interface, so
+// a near-frictionless slide is physically correct here; a felt drag cue must come from structure
+// (Phase-J Schur contact), not from raising μ_io. See docs/hyperrealism-refactor-plan.md.
 const COAX_DIRECT_MU_STATIC = 0.004;
 const COAX_DIRECT_MU_KINETIC = 0.002;
 /**
@@ -2217,6 +2255,13 @@ const COAX_OUTER_MASS_SCALE = 0;
  * Free axial telescoping is untouched (the coax coupling has no axial tie — verified ratio≈0). The
  * remaining headroom to a full symmetric (scale=1) flip is documented; it needs the unified Schur
  * contact solve to absorb the accumulated lateral load without the explicit per-round drift.
+ *
+ * NOTE (empirically confirmed): bumping this even to 0.015 breaks the containment gate — the inner
+ * wire penetrated the wall by ~0.39 cm (≫ 0.05 cm) and the PUSHABILITY deep climb collapsed to ~9 cm.
+ * The distribution is a strict LINEAR multiplier (coax.ts `wa = outer.invMassAt(k)·outerMassScale`),
+ * so the near-concentric ~0.04 cm clearance is exceeded well before the old sweep's 0.03 "ceiling"
+ * under the real navigating load. A stronger sheath-recoil cue therefore genuinely needs the unified
+ * Schur-complement contact solve (Phase J), not a constant bump. Kept at the validated 0.01.
  */
 const COAX_DIRECT_OUTER_MASS_SCALE = 0.01;
 /**

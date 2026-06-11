@@ -43,6 +43,14 @@ export function buildAccessFrame(site: AccessSite): AccessFrame {
   const u = new Vector3().crossVectors(ref, e).normalize();
   const v = new Vector3().crossVectors(e, u).normalize();
   const frame = new Quaternion().setFromUnitVectors(_e3, e);
+  // CHIRALITY ([[irsim-solver-chirality-bug]]): this frame is mirror-EQUIVARIANT (reflecting the
+  // right-side frame reproduces the left-side frame exactly — verified: a reflect-and-rebuild fix was a
+  // no-op). The left-vs-right asymmetry is therefore NOT in the access frame. Refined reproduction
+  // (2026-06-11): on the COAX app config it is BINARY at the iliac→aorta carina under load — deploy 36
+  // steer 0.3 climbs 43 cm on normal but catastrophically prolapses to 0.7 cm on the x-mirror; deploy
+  // 12–24 are symmetric (≤2%), and steer 0 is symmetric (no precurve). So it is a coupling between the
+  // (correct) precurve and a handedness-sensitive contact/lumen/elastic response at the LOADED carina —
+  // a solver fix, not a frame fix. A medial-aim frame symmetrises it but kills the push-through.
   return { x: site.pos.clone(), e, u, v, frame };
 }
 

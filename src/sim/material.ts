@@ -251,6 +251,14 @@ export function buildGuidewireField(
   for (let j = 0; j < segments; j++) {
     const fromTip = segments - 1 - j; // 0 at the distal tip segment
     if (fromTip < tipSegments) {
+      // Precurve about director-X. NOTE (chirality, [[irsim-solver-chirality-bug]]): this curls the
+      // tip toward −director-Y, and director-Y FLIPS under sagittal (x) mirroring in buildAccessFrame
+      // (v'=−mirror(v)) while director-X is mirror-clean — that frame handedness is the chirality
+      // asymmetry. An axis swap to (0,κ,0) (curl toward the mirror-clean +director-X) was EMPIRICALLY
+      // TESTED and REVERTED: it is reflection-symmetric but does not aim up-vessel, collapsing
+      // PUSHABILITY deep-climb 43→5.7 cm. The navigation-effective precurve direction is intrinsically
+      // the mirror-asymmetric one, so a real fix must derive the precurve PLANE from the local vessel
+      // osculating geometry (a redesign), not swap the body axis. Kept on director-X (navigation-good).
       const rc = tipCurvature !== 0 ? new Vector3(tipCurvature, 0, 0) : undefined;
       perSegment.push(profileFromRegion(REGION.wireFloppyTip, ellCm, rc));
     } else if (fromTip < tipSegments + transitionSegments) {
