@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docFromJSON, docToJSON } from "./anatomyDoc";
+import exampleCenterlines from "../../assets/anatomy/example-vmtk-centerlines.json";
+import { compileAnatomy, docFromJSON, docToJSON } from "./anatomyDoc";
 import { anatomyDocToSidecar, MAX_CONTROLS_PER_BRANCH, parseAnatomyInput } from "./anatomy-loader";
-import { compileAnatomy } from "./anatomyDoc";
 import { Lumen } from "./lumen";
 
 /**
@@ -15,10 +14,9 @@ import { Lumen } from "./lumen";
  * anatomy. If decimation or the ostium-weld regressed, the child would fail to connect and this fails.
  */
 
-const EXAMPLE = readFileSync(
-  new URL("../../assets/anatomy/example-vmtk-centerlines.json", import.meta.url),
-  "utf8"
-);
+// The shipped example is imported as JSON (resolveJsonModule) and re-stringified, so the test drives
+// the exact `parseAnatomyInput(text)` path the app's file-load uses — no node:fs / @types/node needed.
+const EXAMPLE = JSON.stringify(exampleCenterlines);
 
 /** Branch ids that an edge of `branchId` is graph-adjacent to (via the lumen's shared-endpoint graph). */
 function adjacentBranchIds(lumen: Lumen, branchId: string): Set<string> {

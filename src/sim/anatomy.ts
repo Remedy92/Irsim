@@ -1,5 +1,7 @@
 import type { Anatomy } from "./types";
-import { applyVariant, compileAnatomy, type AnatomyDoc, type VariantSpec } from "./anatomyDoc";
+import { applyVariant, compileAnatomy, type AnatomyDoc, type VariantOp, type VariantSpec } from "./anatomyDoc";
+import { branchSpecsFromCenterlines } from "./anatomy-loader";
+import { attachToParent, growBifurcatingTree } from "./synth-tree";
 
 /**
  * The shipped "normal" arterial anatomy, authored as a declarative DOCUMENT and compiled into the
@@ -434,6 +436,58 @@ export const NORMAL_DOC: AnatomyDoc = {
 };
 
 /**
+ * Build the "synthetic hepatic lobar tree" variant: a procedurally-grown, Murray's-law-calibrated
+ * bifurcating sub-tree (synth-tree.ts) appended onto the RIGHT hepatic artery, extending it into
+ * segmental branches. This is the in-app demonstration of the "grow realistic distal anatomy" path
+ * (docs/dicom-anatomy-pipeline.md: no public real CTA is MIT-shippable, so distal density is
+ * generated, not redistributed) — and it reaches the territory where selective right-hepatic
+ * segmental cannulation (a real TACE/Y90 sub-skill) actually exercises bending fidelity.
+ *
+ * The tree grows from the right hepatic's distal control point ([-6.0, 22.3, 3.7], r≈0.14) so each
+ * gen-1 ostium coincides with the parent's terminal sample; `attachToParent` re-parents them onto
+ * `hepatic_r` and `branchSpecsFromCenterlines` decimates+welds them — so the lumen stays connected
+ * and the segmental tree is navigable from femoral access through the real hepatic path.
+ */
+function buildSyntheticHepaticVariant(): VariantSpec {
+  const grown = attachToParent(
+    growBifurcatingTree({
+      idPrefix: "heptree",
+      name: "Right hepatic segmental",
+      rootPoint: [-6.0, 22.3, 3.7],
+      rootDir: [-0.8, 1.0, -0.2],
+      rootRadius: 0.14,
+      generations: 4,
+      seed: 0x4ed8,
+      attenuation: 0.5
+    }),
+    "hepatic_r"
+  );
+  const specs = branchSpecsFromCenterlines(grown);
+  const ops: VariantOp[] = specs.map((spec) => ({ op: "addBranch", spec }));
+  // A distal selective target on the deepest segmental branch (last grown ⇒ smallest, most distal).
+  const deepest = specs[specs.length - 1];
+  ops.push({
+    op: "addTarget",
+    spec: {
+      id: "t_hepatic_seg",
+      name: "Right hepatic segmental (selective)",
+      via: deepest.id,
+      ostiumOf: deepest.id,
+      acceptance: 0.3
+    }
+  });
+  return {
+    id: "synthetic-hepatic-tree",
+    name: "Synthetic right-hepatic segmental tree (procedural)",
+    note:
+      "A procedurally-generated (Murray's law γ=2.7, deterministic) lobar tree appended onto the right " +
+      "hepatic artery, extending it into segmental branches. Demonstrates the generated-anatomy path " +
+      "(CC0, generic, not patient-specific) and unlocks distal selective right-hepatic cannulation.",
+    ops
+  };
+}
+
+/**
  * Anatomical variants, expressed as operations on NORMAL_DOC. These are the cannulation challenges
  * that define real IR practice (docs/anatomy-realism-roadmap.md §5). Each stays fully graph-connected
  * because the reparent op re-welds the moved branch onto its new origin.
@@ -482,7 +536,8 @@ export const ANATOMY_VARIANTS: VariantSpec[] = [
         ]
       }
     ]
-  }
+  },
+  buildSyntheticHepaticVariant()
 ];
 
 /** Build the shipped "normal" anatomy (no variant). Stable public API consumed across the app. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
-import { buildNormalAnatomy } from "./anatomy";
+import { buildAnatomy, buildNormalAnatomy } from "./anatomy";
 import { Lumen } from "./lumen";
 import type { VesselBranch } from "./types";
 
@@ -170,5 +170,54 @@ describe("buildNormalAnatomy — ostium welds register in the lumen graph", () =
       });
       expect(meetsSibling, `${d} does not share the celiac trifurcation node`).toBe(true);
     }
+  });
+});
+
+describe("synthetic-hepatic-tree variant — procedurally-grown distal anatomy is connected + navigable", () => {
+  const anatomy = buildAnatomy("synthetic-hepatic-tree");
+  const synthIds = anatomy.branches.filter((b) => b.id.startsWith("heptree_")).map((b) => b.id);
+  const lumen = new Lumen(anatomy);
+
+  it("appends a non-trivial grown sub-tree onto the normal anatomy", () => {
+    expect(anatomy.branches.length).toBeGreaterThan(buildNormalAnatomy().branches.length);
+    expect(synthIds.length).toBeGreaterThanOrEqual(4); // several bifurcating segmental branches
+  });
+
+  it("keeps every grown centerline finite and radius-positive (no NaN from the generator)", () => {
+    for (const id of synthIds) {
+      const b = anatomy.branches.find((x) => x.id === id)!;
+      for (const p of b.points) {
+        expect(Number.isFinite(p.pos.x) && Number.isFinite(p.pos.y) && Number.isFinite(p.pos.z)).toBe(true);
+        expect(p.radius).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("welds the whole segmental tree into the lumen graph (reachable from the right hepatic)", () => {
+    // Each grown branch's ostium edge must touch its parent — either hepatic_r (generation 1) or
+    // another grown branch (deeper generations). A single orphan means a wire could never reach it.
+    for (const id of synthIds) {
+      const idx = lumen.edges.findIndex((e) => e.branchId === id);
+      expect(idx, `no edge for grown branch ${id}`).toBeGreaterThanOrEqual(0);
+      const ostium = lumen.edges[idx];
+      const connected = ostium.adjacent.some((j) => {
+        const pid = lumen.edges[j].branchId;
+        return pid === "hepatic_r" || pid.startsWith("heptree_");
+      });
+      expect(connected, `grown branch ${id} is orphaned (no weld to hepatic_r or a sibling)`).toBe(true);
+    }
+    // At least one generation-1 branch must touch hepatic_r directly (the tree is rooted on it).
+    const g1 = synthIds.filter((id) => id.startsWith("heptree_g1_"));
+    const rootedOnHepaticR = g1.some((id) => {
+      const idx = lumen.edges.findIndex((e) => e.branchId === id);
+      return lumen.edges[idx].adjacent.some((j) => lumen.edges[j].branchId === "hepatic_r");
+    });
+    expect(rootedOnHepaticR, "no generation-1 branch welds onto hepatic_r").toBe(true);
+  });
+
+  it("exposes a distal selective target on a real grown branch", () => {
+    const target = anatomy.targets.find((t) => t.id === "t_hepatic_seg");
+    expect(target, "missing synthetic segmental target").toBeTruthy();
+    expect(anatomy.branches.some((b) => b.id === target!.viaBranchId)).toBe(true);
   });
 });

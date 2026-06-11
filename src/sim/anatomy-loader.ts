@@ -259,6 +259,17 @@ export function anatomyDocFromCenterlines(input: RawCenterlineTree): AnatomyDoc 
   return validateAnatomyDoc(doc);
 }
 
+/**
+ * Convert raw centerline branches to `BranchSpec`s (decimated, child ostia welded) WITHOUT wrapping
+ * them in a full document or validating connectivity. For callers that SPLICE generated branches into
+ * an existing `AnatomyDoc` (e.g. appending a synthetic sub-tree onto a real parent via a variant's
+ * addBranch ops) — there the parents live in the host document, so a standalone validation would
+ * wrongly reject the cross-document `parentId`.
+ */
+export function branchSpecsFromCenterlines(branches: RawCenterlineBranch[]): BranchSpec[] {
+  return branches.map((b) => convertBranch(b));
+}
+
 /** Convert one raw branch into a `BranchSpec`, decimating its centerline. */
 function convertBranch(raw: RawCenterlineBranch): BranchSpec {
   if (!raw.id) throw new Error("anatomyDocFromCenterlines: a branch is missing an id");

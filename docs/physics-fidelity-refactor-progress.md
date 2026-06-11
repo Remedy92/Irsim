@@ -19,7 +19,7 @@
 - **CHECKPOINTED + ANATOMY BRIDGE (2026-06-11):** The Phase A–G work is now **committed** (`76ec886`).
   Two stale-doc corrections were discovered and acted on this session (see "Session 2026-06-11" below):
   **(1)** Phase AC is effectively **already done in committed code** — `anatomy.ts`/`anatomyDoc.ts` ship a
-  25-branch declarative `AnatomyDoc` (aortoiliac + arch + recalibrated asymmetric renals + full
+  26-branch declarative `AnatomyDoc` (aortoiliac + arch + recalibrated asymmetric renals + full
   visceral/mesenteric tree + pelvic UFE path) with variants and the ostium-weld, not the "8-branch
   perpendicular-renal placeholder" the roadmap describes. **(2)** The DICOM-bridge substrate the anatomy
   roadmap calls "Phase 2" is ~80% present — `anatomyDoc.ts` is JSON-serialisable with validation + weld.
@@ -72,7 +72,7 @@
 | G | THE FLIP (SHIPPED→DIRECT, delete dead code, perf-discrepancy check) | ✅ done | green (full suite + typecheck + build + browser) |
 | H | Slim cosserat.ts + invert material ownership | ⏳ not started | — |
 | AC | Anatomy calibration + visceral core (zero engine change; parallel to H) | ✅ done (in committed code; verified 2026-06-11) | green |
-| BR | Anatomy ingestion bridge (sidecar/centerline loader + picker + DICOM pipeline design) | ✅ done (2026-06-11) | green |
+| BR | Anatomy ingestion bridge (sidecar/centerline loader + picker + synthetic generator + DICOM pipeline design) | ✅ done (2026-06-11) | green |
 | X | Chirality fix (moved BEFORE human evaluation; runs after H) | ⏳ not started | — |
 | V | Clinician credibility gate (interim after X+AC; final after I) — **EXIT CRITERION** | ⏳ not started | — |
 | I | Additive material fidelity (nitinol/twist/anisotropy/vessel) | ⏳ not started | — |
@@ -256,7 +256,7 @@ pulled the "real anatomy / DICOM-ready" track forward (the stated next product g
   describe an 8-branch near-perpendicular-renal placeholder with no visceral core and no loader. The
   **committed reality** is `anatomyDoc.ts` (declarative, JSON-serialisable `AnatomyDoc` + compiler with
   the ostium-weld + variant ops + `validateAnatomyDoc`/`docFromJSON`/`docToJSON`) and `anatomy.ts`
-  (`NORMAL_DOC`: 25 branches — aortoiliac + arch great vessels + recalibrated **asymmetric** renals
+  (`NORMAL_DOC`: 26 branches — aortoiliac + arch great vessels + recalibrated **asymmetric** renals
   [~54° caudal/lateral, R longer than L] + the full visceral/mesenteric tree
   [celiac→hepatic/splenic/GDA/left-gastric, SMA→ileocolic/middle-colic, IMA→left-colic/superior-rectal]
   + pelvic [internal iliac→uterine, the UFE path] — plus `bovine-arch` and `replaced-rha-sma` variants).
@@ -284,9 +284,19 @@ pulled the "real anatomy / DICOM-ready" track forward (the stated next product g
     `assets/anatomy/example-vmtk-centerlines.json`. **License corrections** vs the roadmap: OpenCCO record
     is conflicted (GPL badge vs LGPL readme) → downgraded to reference-only; VascuSynth is CC BY 4.0, not
     Apache; neither grants generated-output ownership in writing (self-label CC0, retain configs).
-- **Verification:** typecheck ✅ · build ✅ (vite, 70 modules, 937 ms) · new anatomy tests ✅ (14) · full
-  suite re-run pending confirmation. Physics hot path untouched, so the direct-lane gates/browser smoke
-  are unaffected (default anatomy path is behaviourally identical to the prior `buildNormalAnatomy()`).
+  - **Synthetic distal-tree generator + a navigable in-app scenario** — `src/sim/synth-tree.ts`
+    (`growBifurcatingTree`, `hepaticSubtreeTree`, `attachToParent`): deterministic Murray's-law (γ=2.7)
+    bifurcating growth, no `Math.random`/three.js, exact-ostium-coincidence so the bridge weld connects.
+    `anatomy.ts` registers a `synthetic-hepatic-tree` VARIANT that grows a segmental tree off the right
+    hepatic artery (via `branchSpecsFromCenterlines` + `addBranch` ops) — selectable in the picker and
+    navigable from femoral access; it's the in-app proof of the "grow realistic distal anatomy (CC0,
+    generic)" path that the license analysis identified as the shortest route to shippable real-ish
+    anatomy. Tests: `synth-tree.test.ts` (14) + a connectivity/navigability gate in `anatomy.test.ts`.
+- **Verification:** typecheck ✅ · build ✅ (vite, 70 modules, ~0.93 s) · full suite ✅ (**223 passed · 4
+  skipped · 3 todo, 22 files**, +32 vs Phase G's 191 — anatomy-loader 10, anatomy-ingest 4, synth-tree 14,
+  +4 variant/connectivity) · headless physics smoke ✅ (0 wall penetration, p95 7.8 ms). Physics hot path
+  untouched, so the direct-lane gates/browser smoke are unaffected (default anatomy path is behaviourally
+  identical to the prior `buildNormalAnatomy()`).
 
 ---
 

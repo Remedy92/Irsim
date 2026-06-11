@@ -92,8 +92,12 @@ describe("anatomyDoc — validation rejects malformed documents", () => {
 });
 
 describe("anatomyDoc — anatomical variants", () => {
-  it("exposes the bovine arch and replaced-RHA variants", () => {
-    expect(ANATOMY_VARIANTS.map((v) => v.id).sort()).toEqual(["bovine-arch", "replaced-rha-sma"]);
+  it("exposes the bovine arch, replaced-RHA, and synthetic-hepatic-tree variants", () => {
+    expect(ANATOMY_VARIANTS.map((v) => v.id).sort()).toEqual([
+      "bovine-arch",
+      "replaced-rha-sma",
+      "synthetic-hepatic-tree"
+    ]);
   });
 
   it("buildAnatomy() with no id returns the normal anatomy", () => {
