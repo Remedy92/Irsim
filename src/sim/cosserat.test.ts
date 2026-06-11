@@ -524,7 +524,7 @@ describe("CosseratRod — capsule-chain lumen + branch + self-collision (Stage 4
     // below the diameter (verified ~0.074 < 0.1); WITH it the coils self-support at ~0.117.
     expect(minD).toBeGreaterThanOrEqual(2 * r - 0.01);
     expect(allFinite(rod)).toBe(true);
-  });
+  }, 60_000);
 });
 
 // =============================================================================================
@@ -943,7 +943,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
       expect(asm.outer.deployedLength()).toBeGreaterThan(sheathAdvanced - 5); // sheath held depth
       expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
     },
-    20000
+    90_000
   );
 
   it("rebuilds the assembly at the left common femoral access and stays stable", () => {

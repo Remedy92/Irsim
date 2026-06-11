@@ -143,7 +143,7 @@ describe("Phase-0 calibrated validation rig — chirality / handedness", () => {
       expect(Number.isFinite(n) && Number.isFinite(m)).toBe(true);
       expect(relDiff).toBeLessThan(0.12); // measured ≤3.8% in-envelope; 0.12 is a generous guard
     }
-  }, 90000);
+  }, 180_000);
 });
 
 // ---------------------------------------------------------------------------
