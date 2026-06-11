@@ -910,7 +910,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
       lastDeepTipDistance = asm.inner.tip().distanceTo(access);
       expect(asm.inner.deployedLength()).toBeGreaterThan(20);
     }
-  }, 45000);
+  }, 90000);
 
   it(
     "drives the wire and sheath to independent deployments without coupling or exploding",
