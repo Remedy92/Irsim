@@ -238,9 +238,9 @@ export function solveCoaxialNormalContact(
   }
   const Cn = (allowedRadius - rho) * portal; // scale the violation by the portal blend
   if (Cn >= 0 && c.lambdaN <= 0) return; // separated AND no stored load (true inequality)
-  const wIn = inner.w[c.node];
-  const wa = outer.w[k] * outerMassScale;
-  const wb = outer.w[k + 1] * outerMassScale;
+  const wIn = inner.invMassAt(c.node);
+  const wa = outer.invMassAt(k) * outerMassScale;
+  const wb = outer.invMassAt(k + 1) * outerMassScale;
   const om = 1 - u;
   // gradient-mass = w_in·|−n|² + w_a·|(1−u)n|² + w_b·|u n|²  (|n|=1)
   const gradMass = wIn + wa * om * om + wb * u * u;
@@ -277,7 +277,7 @@ export function solveCoaxialFriction(
     return;
   }
   const p = inner.x[c.node];
-  const w = inner.w[c.node];
+  const w = inner.invMassAt(c.node);
   if (w <= 0) return;
   // t1 = outer tangent projected off the normal; t2 = n × t1
   _t1.copy(c.vesselTangent);
@@ -341,7 +341,8 @@ export function solveCoaxialCentering(
   c: CoaxContact,
   gain: number,
   portal: number,
-  _dtSeconds: number
+  _dtSeconds: number,
+  outerMassScale = 1
 ): void {
   if (gain <= 0 || portal <= 0) return;
   const k = c.outerSegment;
@@ -356,9 +357,9 @@ export function solveCoaxialCentering(
   // C = perpendicular offset (vector); pull the inner toward x_o along −C, share with the outer
   _rel.subVectors(pIn, _xo);
   _perp.copy(_rel).addScaledVector(_to, -_rel.dot(_to)); // perpendicular offset vector
-  const wIn = inner.w[c.node];
-  const wa = outer.w[k];
-  const wb = outer.w[k + 1];
+  const wIn = inner.invMassAt(c.node);
+  const wa = outer.invMassAt(k) * outerMassScale;
+  const wb = outer.invMassAt(k + 1) * outerMassScale;
   const om = 1 - u;
   const wSum = wIn + wa * om * om + wb * u * u;
   if (wSum <= 0) return;

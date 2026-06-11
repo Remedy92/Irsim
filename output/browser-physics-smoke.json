@@ -1,0 +1,336 @@
+{
+  "url": "http://localhost:5174/",
+  "thresholds": {
+    "maxWallPenetrationCm": 0.05,
+    "maxSegmentErrorCm": 0.15,
+    "maxSettleSpeedCmS": 2,
+    "minWireExitCm": 2,
+    "maxCoveredRhoSlackCm": 0.02
+  },
+  "reports": [
+    {
+      "name": "wire-forward-28x-w",
+      "frames": 829,
+      "final": {
+        "frame": 951,
+        "time": 7.9587999999523085,
+        "dt": 0.008399999976158142,
+        "physicsMode": "direct",
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 19.199999999999996,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 6.5,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 19.201674167864603,
+          "tipToTarget": 16.82442015939727,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 39,
+            "deployed": 19.201674167864603,
+            "commanded": 19.199999999999996,
+            "tip": [
+              -2.621676277282822,
+              -3.139358313055892,
+              0.026979374091475453
+            ],
+            "tipSpeed": 0.04585994562421632,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.0021478715500110046,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 14,
+            "deployed": 6.5,
+            "commanded": 6.5,
+            "tip": [
+              -3.12186520458316,
+              -5.074816873328672,
+              0.10001104588001067
+            ],
+            "tipSpeed": 0.0267749483133533,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.000001791207868029332,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 13,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": 1.9341695792031772,
+          "maxCoveredInnerRho": 0.008892621938820577,
+          "innerClearance": 0.039999999999999994
+        },
+        "perf": {
+          "stepMs": 6.700000047683716,
+          "tangentAssemblies": 32,
+          "elementForceEvals": 11424
+        }
+      },
+      "summary": {
+        "physicsMode": "direct",
+        "wireCommandMin": 8,
+        "wireCommandMax": 19.199999999999996,
+        "wireActualMin": 8,
+        "wireActualMax": 19.243385676645396,
+        "sheathCommandMin": 6.5,
+        "sheathCommandMax": 6.5,
+        "sheathActualMin": 6.5,
+        "sheathActualMax": 6.5,
+        "wireTipYMin": -3.7326492453929934,
+        "wireTipYMax": -2.805680182352917,
+        "wireMaxPen": 2.220446049250313e-16,
+        "sheathMaxPen": 2.220446049250313e-16,
+        "wireMaxSegErr": 0.05508242705147709,
+        "sheathMaxSegErr": 0.000014466146260105894,
+        "wireMaxTipSpeed": 4.6796197891139455,
+        "sheathMaxTipSpeed": 0.14166362372424365,
+        "coaxMaxLoad": 0.001110876957248463,
+        "coaxMaxContacts": 13,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.040000000000000216,
+        "wireExitPastOuterTipMin": 1.4216920441254193,
+        "wireExitPastOuterTipMax": 2.2627350108704656,
+        "wireExitPastOuterTipFinal": 1.9341695792031772,
+        "stepMsP50": 6.599999964237213,
+        "stepMsP95": 7.699999988079071,
+        "stepMsMax": 10,
+        "stepMsFrames": 829,
+        "maxTangentAssemblies": 32,
+        "maxElementForceEvals": 11424,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    },
+    {
+      "name": "reset-rebuild",
+      "frames": 179,
+      "final": {
+        "frame": 179,
+        "time": 1.4968000000119186,
+        "dt": 0.00830000001192093,
+        "physicsMode": "direct",
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 8,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 6.5,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 8,
+          "tipToTarget": 17.40696159306251,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 17,
+            "deployed": 8,
+            "commanded": 8,
+            "tip": [
+              -2.4072612348133258,
+              -3.76259910444568,
+              0.23533316186572129
+            ],
+            "tipSpeed": 0.07090459095669999,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00003218411218464112,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 14,
+            "deployed": 6.5,
+            "commanded": 6.5,
+            "tip": [
+              -3.1361478006957713,
+              -5.0626604091376235,
+              0.10844663250576012
+            ],
+            "tipSpeed": 0.09212491000433586,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00000916200660994182,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 13,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": 1.3688984786748548,
+          "maxCoveredInnerRho": 0.0022422488340568883,
+          "innerClearance": 0.039999999999999994
+        },
+        "perf": {
+          "stepMs": 3.399999976158142,
+          "tangentAssemblies": 32,
+          "elementForceEvals": 6496
+        }
+      },
+      "summary": {
+        "physicsMode": "direct",
+        "wireCommandMin": 8,
+        "wireCommandMax": 8,
+        "wireActualMin": 8,
+        "wireActualMax": 8,
+        "sheathCommandMin": 6.5,
+        "sheathCommandMax": 6.5,
+        "sheathActualMin": 6.5,
+        "sheathActualMax": 6.5,
+        "wireTipYMin": -3.76259910444568,
+        "wireTipYMax": -3.6789423956138307,
+        "wireMaxPen": 0,
+        "sheathMaxPen": 0,
+        "wireMaxSegErr": 0.014502833393653436,
+        "sheathMaxSegErr": 0.004422356186734033,
+        "wireMaxTipSpeed": 1.4443628194135232,
+        "sheathMaxTipSpeed": 1.0684840327944334,
+        "coaxMaxLoad": 0,
+        "coaxMaxContacts": 13,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.023591717956045352,
+        "wireExitPastOuterTipMin": 1.3688984786748548,
+        "wireExitPastOuterTipMax": 1.5233722330045862,
+        "wireExitPastOuterTipFinal": 1.3688984786748548,
+        "stepMsP50": 3.400000035762787,
+        "stepMsP95": 3.600000023841858,
+        "stepMsMax": 3.899999976158142,
+        "stepMsFrames": 179,
+        "maxTangentAssemblies": 32,
+        "maxElementForceEvals": 6496,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    },
+    {
+      "name": "sheath-forward-8x-arrowup",
+      "frames": 402,
+      "final": {
+        "frame": 582,
+        "time": 4.8551999999880735,
+        "dt": 0.008399999976158142,
+        "physicsMode": "direct",
+        "view": "fluoro",
+        "accessId": "rcfa",
+        "selected": "wire",
+        "targetId": "t_renal_l",
+        "inputs": {
+          "wire": {
+            "deployed": 8,
+            "torque": 0,
+            "steer": 0.35
+          },
+          "sheath": {
+            "deployed": 9.700000000000003,
+            "torque": 0,
+            "steer": 0
+          }
+        },
+        "metrics": {
+          "depth": 8,
+          "tipToTarget": 17.326620152382247,
+          "reached": false,
+          "contrast": 0
+        },
+        "rods": {
+          "wire": {
+            "nodes": 17,
+            "deployed": 8,
+            "commanded": 8,
+            "tip": [
+              -2.556756144829809,
+              -3.6600833318025185,
+              0.16525130898533555
+            ],
+            "tipSpeed": 0.024580402080812348,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.00003164182620146727,
+            "finite": true
+          },
+          "sheath": {
+            "nodes": 20,
+            "deployed": 9.700000000000003,
+            "commanded": 9.700000000000003,
+            "tip": [
+              -2.0476005161763102,
+              -2.2338077338059317,
+              0.22033381349987385
+            ],
+            "tipSpeed": 0.10425764116553939,
+            "maxWallPenetration": 0,
+            "maxSegmentLengthError": 0.000009540558581044856,
+            "finite": true
+          }
+        },
+        "coax": {
+          "activeContacts": 16,
+          "normalLoad": 0,
+          "innerExitPastOuterTip": -1.5154062329977458,
+          "maxCoveredInnerRho": 0.0030477295102973225,
+          "innerClearance": 0.039999999999999994
+        },
+        "perf": {
+          "stepMs": 4.100000023841858,
+          "tangentAssemblies": 32,
+          "elementForceEvals": 7840
+        }
+      },
+      "summary": {
+        "physicsMode": "direct",
+        "wireCommandMin": 8,
+        "wireCommandMax": 8,
+        "wireActualMin": 8,
+        "wireActualMax": 8,
+        "sheathCommandMin": 6.9,
+        "sheathCommandMax": 9.700000000000003,
+        "sheathActualMin": 6.532399999856949,
+        "sheathActualMax": 9.700000000000003,
+        "wireTipYMin": -4.19203088472481,
+        "wireTipYMax": -3.6318615701229144,
+        "wireMaxPen": 0,
+        "sheathMaxPen": 0,
+        "wireMaxSegErr": 0.021606094946246823,
+        "sheathMaxSegErr": 0.008548960513382442,
+        "wireMaxTipSpeed": 11.77825435856987,
+        "sheathMaxTipSpeed": 60.97830939905131,
+        "coaxMaxLoad": 0.0021553884690070487,
+        "coaxMaxContacts": 16,
+        "coaxInnerClearance": 0.039999999999999994,
+        "coaxMaxCoveredRho": 0.03999999999887815,
+        "wireExitPastOuterTipMin": -1.621447037302725,
+        "wireExitPastOuterTipMax": 1.3670016703043053,
+        "wireExitPastOuterTipFinal": -1.5154062329977458,
+        "stepMsP50": 4.099999964237213,
+        "stepMsP95": 4.300000011920929,
+        "stepMsMax": 5.099999964237213,
+        "stepMsFrames": 402,
+        "maxTangentAssemblies": 32,
+        "maxElementForceEvals": 7840,
+        "badFrameCount": 0,
+        "firstBad": null
+      }
+    }
+  ]
+}

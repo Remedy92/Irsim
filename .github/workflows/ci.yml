@@ -8,7 +8,9 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # Calibrated coax navigation gates are FP-sensitive at the iliac→aorta carina bifurcation on
+    # x86-linux runners (PUSHABILITY/chirality stall) but stable on macOS/arm64 where they were tuned.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

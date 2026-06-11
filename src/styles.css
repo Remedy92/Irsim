@@ -147,8 +147,15 @@ kbd,
 /* ---------- workbench ---------- */
 .work {
   display: grid;
-  grid-template-columns: 264px 1fr 248px;
+  grid-template-columns: 256px 1fr 232px;
   min-height: 0;
+}
+/* center column: the image, with the navigation metrics bar pinned beneath it */
+.center {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+  min-width: 0;
 }
 .panel {
   background: var(--panel);
@@ -183,6 +190,13 @@ kbd,
   border-radius: var(--radius);
   padding: 2px;
   gap: 2px;
+}
+.seg.sub {
+  margin-top: 6px;
+}
+.seg.sub button {
+  padding: 5px;
+  font-size: 11px;
 }
 .seg button {
   flex: 1;
@@ -306,6 +320,41 @@ select:hover {
   color: var(--text-4);
   line-height: 1.55;
   margin: 10px 0 0;
+}
+.hint.err {
+  color: #e57373;
+}
+
+/* ---------- file-load row (anatomy sidecar) ---------- */
+.loadrow {
+  display: block;
+  margin-top: 10px;
+}
+.loadrow span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.loadrow input[type="file"] {
+  width: 100%;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.loadrow input[type="file"]::file-selector-button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  margin-right: 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.loadrow input[type="file"]::file-selector-button:hover {
+  border-color: var(--line-2);
 }
 
 /* ---------- viewport ---------- */
@@ -678,4 +727,436 @@ kbd {
   padding: 6px 11px;
   font-size: 10.5px;
   letter-spacing: 0.8px;
+}
+
+/* ---------- C-arm angulation axis (readout + slider + ±step) ---------- */
+.carm-axis {
+  margin: 12px 0;
+}
+.carm-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 7px;
+}
+.carm-head b {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.carm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.carm-row input[type="range"] {
+  flex: 1;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.carm-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--line-2);
+  border-radius: 99px;
+}
+.carm-row input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--line-2);
+  border-radius: 99px;
+}
+.carm-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5.5px;
+  border-radius: 99px;
+  background: var(--text);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--line-2);
+}
+.carm-row input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 99px;
+  background: var(--text);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--line-2);
+}
+.step {
+  width: 26px;
+  height: 24px;
+  flex: 0 0 auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.step:hover {
+  color: var(--text);
+  background: var(--raised);
+  border-color: var(--line-2);
+}
+.step:active {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+/* ---------- collapsible setup ---------- */
+.disclosure {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 26px 0 0;
+  padding: 9px 0 8px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: left;
+}
+.disclosure span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+}
+.disclosure span::after {
+  content: " ▸";
+  color: var(--text-4);
+}
+.disclosure.open span::after {
+  content: " ▾";
+}
+.disclosure small {
+  font-size: 10px;
+  color: var(--text-4);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.disclosure:hover {
+  color: var(--text-2);
+}
+.disclosure-body {
+  padding-top: 4px;
+}
+.field {
+  display: block;
+  margin: 12px 0;
+}
+.field > span {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 7px;
+}
+
+/* ---------- center: navigation metrics bar ---------- */
+.metrics-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line);
+}
+.mcell {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  padding: 9px 14px 10px;
+}
+.mcell > span {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+}
+.mcell b {
+  display: block;
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  line-height: 1.15;
+  margin-top: 3px;
+  color: var(--text);
+}
+.mcell b i {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin-left: 4px;
+  font-style: normal;
+  letter-spacing: 0;
+}
+.mcell small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-3);
+}
+.mcell small::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+  background: transparent;
+  border: 1px solid var(--text-3);
+}
+.mcell small.live {
+  color: var(--text);
+}
+.mcell small.live::before {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+
+/* ---------- image corner readouts (burned-in C-arm data) ---------- */
+.overlay.bl,
+.overlay.br {
+  bottom: 16px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: var(--text-2);
+}
+.overlay.bl {
+  left: 18px;
+}
+.overlay.br {
+  right: 18px;
+}
+
+/* ---------- on-image vessel callouts ---------- */
+.labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.labels span {
+  position: absolute;
+  transform: translate(2px, -50%);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-shadow: 0 1px 4px #000, 0 0 3px #000;
+  padding: 0 4px;
+  border-left: 2px solid rgba(242, 246, 249, 0.4);
+}
+
+/* ---------- measurement caliper ---------- */
+.measure-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  cursor: crosshair;
+}
+.measure-layer .mpt {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid var(--accent);
+  border-radius: 99px;
+  background: rgba(242, 246, 249, 0.2);
+  pointer-events: none;
+}
+.measure-layer .mline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.measure-layer .mline line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.measure-layer .mlabel {
+  position: absolute;
+  transform: translate(8px, -50%);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  padding: 1px 5px;
+  border-radius: 2px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ---------- approach (right panel) ---------- */
+.approach {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.compass {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.compass .ring {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.5;
+}
+.compass .arrow {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+.compass .head {
+  fill: var(--accent);
+}
+.compass .hit {
+  fill: var(--accent);
+}
+.compass.reached .ring {
+  stroke: var(--accent);
+}
+.compass-read {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.compass-read i {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-style: normal;
+  color: var(--text-3);
+  margin-left: 2px;
+}
+.approach-state b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.approach-state small {
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+/* ---------- run debrief (shown on target reached) ---------- */
+.debrief {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.debrief div {
+  background: var(--panel-2);
+  padding: 9px 11px;
+}
+.debrief div:last-child {
+  grid-column: 1 / -1;
+}
+.debrief span {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.debrief b {
+  display: block;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 3px;
+}
+.debrief b i {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-style: normal;
+  color: var(--text-3);
+  margin-left: 3px;
+}
+
+/* ---------- console keys (right panel) ---------- */
+.console-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.console-keys button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.console-keys button:hover {
+  color: var(--text);
+  background: var(--raised);
+  border-color: var(--line-2);
+}
+
+/* ---------- bottom deck hint ---------- */
+.deck-hint {
+  margin: 0 0 0 auto;
+  align-self: center;
+  font-size: 10.5px;
+  color: var(--text-4);
+  letter-spacing: 0.3px;
 }

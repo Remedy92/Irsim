@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Quaternion, Vector3 } from "three";
 import type { Anatomy } from "./types";
-import { CosseratRod } from "./cosserat";
+import { CosseratRod, SHEATH } from "./cosserat";
 import {
   buildAccessFrame,
   defaultInsertionState,
@@ -106,6 +106,7 @@ describe("compliant inlet motors (Stage-3 wiring; exercised here)", () => {
   it("position motor drives a free node toward the commanded inlet offset along e", () => {
     const access = af();
     const ins = defaultInsertionState(0.25);
+    ins.forceMax = 1e12; // unconstrained: this test exercises convergence, not the (physical-N) cap
     ins.inletOffsetTarget = 0.1; // target axial position along e (= +y)
     const p = new Vector3(0.5, 0, -0.5); // off the axis and behind the target
     for (let i = 0; i < 40; i++) solveInletPositionMotor(p, 1, access, ins, 1 / 240);
@@ -150,6 +151,10 @@ describe("CosseratRod injection on the live rod", () => {
     for (let i = 0; i < steps; i++) rod.step(1 / 60);
   }
 
+  function eiOf(rod: CosseratRod, segment = 0): number {
+    return rod.restLen[segment] / (4 * rod.material.perSegment[segment].alphaBend1);
+  }
+
   it("feeding grows the node count; rest lengths stay frozen at h (no rescale)", () => {
     const rod = new CosseratRod(tube(5), "a");
     rod.input = { deployed: 10, steer: 0, torque: 0 };
@@ -165,6 +170,22 @@ describe("CosseratRod injection on the live rod", () => {
     for (const l of rod.restLen) expect(l).toBeCloseTo(rod.h, 9);
     // ~deployed/h segments
     expect(rod.n - 1).toBeGreaterThan(Math.round(20 / rod.h));
+  });
+
+  it("prepending feed material immediately creates a full-length proximal segment", () => {
+    const rod = new CosseratRod(tube(5), "a");
+    const access = rod.access.x.clone();
+    for (let i = 0; i < rod.n; i++) {
+      rod.x[i].copy(access).addScaledVector(rod.access.e, i * rod.h);
+      rod.prev[i].copy(rod.x[i]);
+    }
+    const tipY0 = rod.tip().y;
+
+    rod.prependNode(rod.access.x, rod.access.frame, rod.h);
+
+    expect(rod.x[0].distanceTo(access)).toBeLessThan(1e-9);
+    expect(rod.x[1].distanceTo(rod.x[0])).toBeCloseTo(rod.h, 9);
+    expect(rod.tip().y).toBeCloseTo(tipY0 + rod.h, 9);
   });
 
   it("material advection: injecting proximal shaft never smears the distal tip profile", () => {
@@ -184,5 +205,39 @@ describe("CosseratRod injection on the live rod", () => {
     expect(seg2[seg2.length - 1].restCurvature.x).toBeCloseTo(tipCurvBefore, 9);
     // and the proximal end is shaft (zero rest curvature), not the floppy tip
     expect(seg2[0].restCurvature.x).toBe(0);
+  });
+
+  it("sheath injection keeps sheath shaft material instead of leaking guidewire shaft properties", () => {
+    const sheath = new CosseratRod(tube(5), "a", SHEATH);
+    sheath.input = { deployed: 10, steer: 0, torque: 0 };
+    run(sheath, 200);
+    const shaftEI = eiOf(sheath, 0);
+    const shaftRadius = sheath.material.perSegment[0].rodRadius;
+
+    sheath.input.deployed = 24;
+    run(sheath, 500);
+
+    for (let i = 0; i < Math.min(12, sheath.material.perSegment.length); i++) {
+      expect(eiOf(sheath, i)).toBeCloseTo(shaftEI, 9);
+      expect(sheath.material.perSegment[i].rodRadius).toBeCloseTo(shaftRadius, 12);
+    }
+    expect(shaftRadius).toBeGreaterThan(0.09);
+  });
+
+  it("withdrawal advects remaining material backward before dropping the proximal node", () => {
+    const rod = new CosseratRod(tube(5), "a");
+    const access = rod.access.x.clone();
+    for (let i = 0; i < rod.n; i++) {
+      rod.x[i].copy(access).addScaledVector(rod.access.e, i * rod.h);
+      rod.prev[i].copy(rod.x[i]);
+    }
+    const n0 = rod.n;
+    const tipY0 = rod.tip().y;
+
+    rod.removeProximalNode();
+
+    expect(rod.n).toBe(n0 - 1);
+    expect(rod.x[0].distanceTo(access)).toBeLessThan(1e-9);
+    expect(rod.tip().y).toBeCloseTo(tipY0 - rod.h, 9);
   });
 });

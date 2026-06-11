@@ -99,8 +99,19 @@ export interface InsertionState {
   alphaSleeve: number;
   /** Length of the access sleeve radial-constraint zone (cm). */
   sleeveLength: number;
-  /** Feed-force cap (cm-units · forceScale). */
+  /**
+   * Feed-force cap in PHYSICAL Newtons (operator push ~0.36–0.81 N; deliverable tip ~1.1–1.6 N). The
+   * solver maps the per-substep multiplier λ_feed to a felt force F ≈ λ_feed/Δt_s² in SCALED units
+   * (the absolute mass conditioning knob D_MASS_SCALE inflates λ by ~6 orders over strict SI). The
+   * cap applied to λ_feed is therefore `forceMax · forceScale · Δt_s²`. forceMax = 0 ⇒ a hard stall.
+   */
   forceMax: number;
+  /**
+   * Newtons → scaled-λ-force conversion for the feed-motor cap (so forceMax can be authored in
+   * physical N). Calibrated to the direct lane's λ_feed/Δt_s² readout. 1 keeps the legacy cm-units
+   * convention (the legacy lane uses a hard anchor and never reads this).
+   */
+  forceScale: number;
 }
 
 /** Per-frame user input for an instrument (velocity-controlled; Stage 2 maps store→here). */

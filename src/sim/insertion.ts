@@ -43,6 +43,14 @@ export function buildAccessFrame(site: AccessSite): AccessFrame {
   const u = new Vector3().crossVectors(ref, e).normalize();
   const v = new Vector3().crossVectors(e, u).normalize();
   const frame = new Quaternion().setFromUnitVectors(_e3, e);
+  // CHIRALITY ([[irsim-solver-chirality-bug]]): this frame is mirror-EQUIVARIANT (reflecting the
+  // right-side frame reproduces the left-side frame exactly — verified: a reflect-and-rebuild fix was a
+  // no-op). The left-vs-right asymmetry is therefore NOT in the access frame. Refined reproduction
+  // (2026-06-11): on the COAX app config it is BINARY at the iliac→aorta carina under load — deploy 36
+  // steer 0.3 climbs 43 cm on normal but catastrophically prolapses to 0.7 cm on the x-mirror; deploy
+  // 12–24 are symmetric (≤2%), and steer 0 is symmetric (no precurve). So it is a coupling between the
+  // (correct) precurve and a handedness-sensitive contact/lumen/elastic response at the LOADED carina —
+  // a solver fix, not a frame fix. A medial-aim frame symmetrises it but kills the push-through.
   return { x: site.pos.clone(), e, u, v, frame };
 }
 
@@ -145,9 +153,11 @@ export function solveInletPositionMotor(
   // diagonal block: |∇C|² = 1 per axis (orthonormal frame), gradient-mass = w0
   solveXPBDVectorDiagonal(cu, cv, ce, 0, 0, ins.lambdaFeed, w0, ins.alphaFeedMotor, dtSeconds, _dlam);
 
-  // force cap on the AXIAL feed multiplier: |λ_feed_axial| ≤ F_max·Δt_s²
+  // force cap on the AXIAL feed multiplier: |λ_feed_axial| ≤ (F_max[N]·forceScale)·Δt_s²
+  // forceMax is PHYSICAL Newtons; forceScale converts to the solver's scaled λ-force units (the
+  // absolute mass conditioning knob inflates λ/Δt² over strict SI — see InsertionState.forceMax).
   const lamAxialTrial = ins.lambdaFeed + _dlam.z;
-  const cap = ins.forceMax * dtSeconds * dtSeconds;
+  const cap = ins.forceMax * ins.forceScale * dtSeconds * dtSeconds;
   let dz = _dlam.z;
   if (Math.abs(lamAxialTrial) > cap) {
     const clamped = Math.sign(lamAxialTrial) * cap;
@@ -244,9 +254,11 @@ export function defaultInsertionState(h: number): InsertionState {
     alphaRollMotor: 1e-4,
     alphaSleeve: 1e-8,
     sleeveLength: 4 * h,
-    // Feed-force cap (cm-units · forceScale). Large enough that it never binds during free
-    // advancement (the motor must be able to hold the proximal node); Stage 3 tunes it down
-    // and exercises the cap against a blocked tip / wall.
-    forceMax: 1e12
+    // Feed-force cap in PHYSICAL Newtons (deliverable-tip ~1.1–1.6 N). With the default forceScale=1
+    // (legacy cm-units) this never binds; the legacy lane uses a hard anchor and never reads it. The
+    // DIRECT compliant-feed path overrides forceScale to the calibrated N→scaled-λ conversion (see
+    // cosserat.ts configureDirectFeedMotor) so this cap is physical there.
+    forceMax: 1.2,
+    forceScale: 1
   };
 }

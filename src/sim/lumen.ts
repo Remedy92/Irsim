@@ -257,9 +257,9 @@ export class Lumen {
    *
    * `currentEdge` is the node's last containing edge (−1 = unknown / first acquisition):
    *   - If valid, search currentEdge + its graph neighbours and keep the closest. A switch to a
-   *     DIFFERENT branch is only accepted when `center` is near a shared ostium AND the candidate
-   *     is closer by more than the hysteresis margin Δ_hys = hysteresisFrac·R. Same-branch
-   *     neighbours (continuing along the vessel) switch freely.
+   *     DIFFERENT branch is only accepted when `center` is near a shared ostium, inside the
+   *     candidate branch capsule, AND the candidate is closer by more than the hysteresis margin
+   *     Δ_hys = hysteresisFrac·R. Same-branch neighbours (continuing along the vessel) switch freely.
    *   - If unknown, or if the local search leaves the point far outside the lumen (lost / a long
    *     jump), fall back to the grid global-nearest to re-acquire.
    */
@@ -295,8 +295,12 @@ export class Lumen {
       const margin = hysteresisFrac * Math.max(this.edges[i].ra, this.edges[i].rb);
       const isSwitch = currentEdge >= 0 && this.differentBranch(currentEdge, i);
       if (isSwitch) {
-        // branch transition: only near a shared ostium, and only if clearly closer
+        // Branch transition: only near a shared ostium, only after the sample is actually inside
+        // the candidate branch lumen, and only if it is clearly closer. The inside-capsule guard
+        // prevents a rod near an ostium from being owned by a smaller side branch while still
+        // outside that branch, which otherwise makes contact project against the wrong lumen.
         if (!this.nearOstium(center, currentEdge, 1.5)) return;
+        if (d > 0) return;
         if (d < chosenD - margin) {
           chosen = i;
           chosenU = u;

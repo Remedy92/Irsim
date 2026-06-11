@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { alphaBend, alphaStretch, eiSiToCm, kappaSiToCm } from "./units";
-import { buildGuidewireField, buildSheathField } from "./material";
+import {
+  DEVICE_FLEXURAL_RIGIDITY_TARGETS,
+  buildGuidewireField,
+  buildSheathField,
+  cloneProfile,
+  sheathShaftProfile,
+  wireShaftProfile,
+  type MaterialProfile
+} from "./material";
+
+function eiOf(profile: MaterialProfile, ellCm: number): number {
+  return ellCm / (4 * profile.alphaBend1);
+}
 
 describe("units converters", () => {
   it("eiSiToCm scales N·m² → N·cm² by 1e4", () => {
@@ -48,6 +60,38 @@ describe("graded material field", () => {
     const sheath = buildSheathField(80, ell).perSegment[0];
     expect(sheath.alphaBend1).toBeLessThan(wire.alphaBend1);
     expect(sheath.rodRadius).toBeGreaterThan(wire.rodRadius);
+  });
+
+  it("keeps built-in shaft EI inside measured device-class ranges", () => {
+    const ell = 0.25;
+    const wireShaft = wireShaftProfile(ell);
+    const sheathShaft = sheathShaftProfile(ell);
+    const wireEi = eiOf(wireShaft, ell);
+    const sheathEi = eiOf(sheathShaft, ell);
+    const wireTarget = DEVICE_FLEXURAL_RIGIDITY_TARGETS.guidewireMainShaftEiCm;
+    const sheathTarget = DEVICE_FLEXURAL_RIGIDITY_TARGETS.longSheathMainShaftEiCm;
+
+    expect(wireEi).toBeCloseTo(wireTarget.chosen, 9);
+    expect(wireEi).toBeGreaterThanOrEqual(wireTarget.min);
+    expect(wireEi).toBeLessThanOrEqual(wireTarget.max);
+    expect(sheathEi).toBeCloseTo(sheathTarget.chosen, 9);
+    expect(sheathEi).toBeGreaterThanOrEqual(sheathTarget.min);
+    expect(sheathEi).toBeLessThanOrEqual(sheathTarget.max);
+    expect(sheathEi).toBeGreaterThan(wireEi);
+  });
+
+  it("exposes distinct cloned shaft prototypes for wire and sheath injection", () => {
+    const ell = 0.25;
+    const wire = wireShaftProfile(ell);
+    const sheath = sheathShaftProfile(ell);
+    expect(sheath.rodRadius).toBeGreaterThan(wire.rodRadius);
+    expect(sheath.alphaBend1).toBeLessThan(wire.alphaBend1);
+
+    const a = cloneProfile(wire);
+    const b = cloneProfile(wire);
+    a.restCurvature.x = 99;
+    expect(b.restCurvature.x).toBe(0);
+    expect(wire.restCurvature.x).toBe(0);
   });
 
   it("advection-safe: prepending shaft material does not smear the distal tip profile", () => {
