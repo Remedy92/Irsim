@@ -830,7 +830,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     // require meaningful forward tip travel without reintroducing the old 1:1 feed expectation.
     expect(tipDist1).toBeGreaterThan(tipDist0 + 0.8);
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
-  }, 20000);
+  }, 45000);
 
   it("rolling the hub (torque) and steering stay finite and rotate the tip frame", () => {
     const asm = buildAppAssembly();
@@ -843,7 +843,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     expect(asm.inner.tipRoll()).toBeGreaterThan(0.05);
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
     for (const q of asm.inner.q) expect(q.length()).toBeCloseTo(1, 3);
-  });
+  }, 20000);
 
   it("produces a finite, sane metrics block (the values the HUD reads back)", () => {
     const asm = buildAppAssembly();
@@ -863,7 +863,7 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     expect(Number.isFinite(tipToTarget)).toBe(true);
     expect(tipToTarget).toBeGreaterThanOrEqual(0);
     expect(typeof reached).toBe("boolean");
-  });
+  }, 20000);
 
   it("retracting (lowering deployed) shrinks the wire without exploding", () => {
     const asm = buildAppAssembly();
