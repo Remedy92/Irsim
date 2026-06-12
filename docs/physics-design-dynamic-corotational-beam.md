@@ -136,14 +136,31 @@ accepting whatever R_bend fell out.
 > ```
 > A guidewire is genuinely tiny-mass, so strictly-physical M/Δt² at h=0.5, Δt_s=1/240 is ~6 orders
 > below the stiffness K — that would ill-condition Newton AND erase the felt wind-up/whip. Resolution:
-> keep the physical mass RATIOS, multiply by a SINGLE tuned absolute conditioning scale
-> `D_MASS_SCALE = 8.0e5` (cosserat.ts), **DECOUPLED from GJ**, chosen so the wire-shaft twist term
-> M/Δt² ≈ GJ/ℓ — i.e. it reproduces the previously-validated synthetic twist regime (wire-shaft
-> Jt/Δt²≈17.9 vs GJ/ℓ≈18.4) while now carrying physical ratios. **NEVER re-couple the scale to GJ** —
-> that GJ-coupling was the old ~38× defect. Absolute mass is a free knob for a heavily damped trainer;
-> the ratios are physics, the absolute level is the tuned knob. The twist wind-up / free-flight / BE
-> decay gates (`dynamic.test.ts`) are the canaries that this did not break dynamic twist or
-> substep-invariance.
+> keep the physical mass RATIOS, multiply by tuned absolute conditioning scales **DECOUPLED from GJ**
+> (`cosserat.ts`). Phase B originally used a single `D_MASS_SCALE = 8.0e5`; a subsequent analysis
+> (2026-06-12) showed that uniform lift put the **translational** term m/Δt² ≈ 14,300 N/cm ~12× ABOVE
+> the transverse bend stiffness 12EI/ℓ³ ≈ 1,152 N/cm (shaft EI=12), over-damping every bending mode
+> to near-stasis (~7 min recovery on a 10 cm span). The scale is therefore **SPLIT** into two
+> independent knobs in `CosseratRod`:
+>
+> - **`D_MASS_SCALE_TWIST = 8.0e5`** — applied only to the torsional inertia Jt.  Unchanged from
+>   Phase B: reproduces the validated twist-feel regime (wire-shaft Jt/Δt² ≈ 17.9 vs GJ/ℓ ≈ 18.4,
+>   steel ρ=7.9, r=0.05, h=0.5). **NEVER re-couple this to GJ** — that coupling was the old ~38× defect.
+>   Canaries: wind-up / whip / BE-decay gates in `beamfem/dynamic.test.ts`.
+>
+> - **`D_MASS_SCALE_TRANS = 8.0e5`** (shipped; planned drop to **8.0e2** pending contact work) — applied
+>   to translational inertia m AND bending-rotational inertia Jb (both mix the same deflection modes, so
+>   the pair moves together). The bending-true value is 8.0e2: at shaft EI=12, μ=ρA=6.20e-7 N·s²/cm²,
+>   h=0.5, Δt_s=1/240 this gives m/Δt² ≈ 14.3 N/cm ≈ 0.012·(12EI/ℓ³) — inertia no longer masks the
+>   calibrated EI, first bending mode ≈5.5 rad/s, ζ≈1.14 (essentially critically damped). EMPIRICAL
+>   BLOCKER: with bending-true mass the wall friction stack cannot hold a springy wire against stored
+>   bending energy; shipped-coax shallow climb collapses (9.30 → 0.45 cm). The defect is documented-red
+>   in `dynamic_recovery.test.ts` (`it.fails`) until the Phase-J contact/friction work lands.
+>
+> The contact/coax inverse-mass metric is mean-normalized (`dContactMassScale = mean(m)`,
+> `invMass = mean/m`) and is invariant to BOTH absolute scales, so the split plumbing is safe regardless
+> of whichever value D_MASS_SCALE_TRANS holds. Absolute mass is a free knob for a heavily damped
+> trainer; the ratios are physics, the absolute level is the tuned knob.
 
 ### 1.9 SO(3) rotational update (½θ boundary)
 

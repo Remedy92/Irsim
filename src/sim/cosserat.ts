@@ -484,6 +484,16 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   vesselContactClipLength = 0;
   /** Raw lumen radius (cm) used for CFL while the rod is inside the outer channel. */
   vesselContactClipRadius = 0;
+  /**
+   * Per-node coax DIVERGENCE override. When this rod is the inner member of a coaxial pair, a covered
+   * node whose true distance to its paired sheath segment exceeds the break threshold is marked here
+   * (set by CoaxialAssembly.buildCoaxContacts each substep). A diverged node is EXEMPTED from the
+   * channel clip: it regains vessel-wall contact (so it fails gracefully into the vessel instead of
+   * being dragged through the wall toward the remote sheath) and is skipped by coax projection. The
+   * mask clears automatically when the divergence heals (with hysteresis), restoring containment.
+   * Sparse + index-stable across feed (cleared/resized in buildCoaxContacts); `false` ⇒ contained.
+   */
+  coaxDiverged: boolean[] = [];
 
   /**
    * Uniform external BODY FORCE per node (cm-units force; applied as acceleration w·F in the
@@ -520,9 +530,11 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   private dMass: LumpedMass | null = null;
   private dRestLen = new Float64Array(0);
   /**
-   * The dynamic beam's lumped mass is twist-conditioned for the implicit solve. Contact/coax
-   * projections use that mass only as a relative mobility metric, normalized back near the legacy
-   * unit inverse-mass scale so the staggered contact pass does not inject artificial velocity.
+   * The dynamic beam's lumped mass carries the conditioning scales (D_MASS_SCALE_TRANS/TWIST) for
+   * the implicit solve. Contact/coax projections use that mass only as a relative mobility metric,
+   * normalized back near the legacy unit inverse-mass scale (mean(m)/m per node) so the staggered
+   * contact pass does not inject artificial velocity — and so the metric is invariant to the
+   * absolute conditioning values by construction.
    */
   private dContactMassScale = 1;
   private dContactInertiaScale = 1;
@@ -543,23 +555,73 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   private directReady = false;
   /** Conditioning + whip knobs for the dynamic beam (design-doc param table). */
   /**
-   * The single GJ-DECOUPLED absolute mass-conditioning scale for the PHYSICAL lumped mass
-   * (beamfem/mass.ts, Phase B). Physical density gives real m/Jb/Jt RATIOS but a guidewire is
-   * genuinely tiny-mass, so strictly-physical M/Δt² at h=0.5, Δt_s=1/240 is ~6 orders below the
-   * stiffness K — that would ill-condition Newton AND erase the felt torsional wind-up/whip the
-   * trainer wants. We multiply the physical mass by this one absolute knob, chosen so the
-   * wire-shaft twist term M/Δt² ≈ GJ/ℓ (steel ρ=7.9, r=0.05, h=0.5 ⇒ physical Jt/Δt² is 8.24e5×
-   * smaller than the previously-validated synthetic twist conditioning). 8.0e5 reproduces that
-   * validated twist regime (wire-shaft Jt/Δt²≈18 vs GJ/ℓ≈18.4, ratio ≈0.97) while now carrying
-   * physical ratios across regions/instruments. Absolute mass is a free knob for a heavily damped
-   * trainer; the RATIOS are physics, this absolute level is the tuned knob. NEVER re-couple it to
-   * GJ — that GJ-coupling was the old (~38× bend-inertia) defect.
+   * GJ-DECOUPLED absolute mass-conditioning scales for the PHYSICAL lumped mass (beamfem/mass.ts),
+   * SPLIT ANISOTROPICALLY between the twist DOF and the translational/bending DOFs. Physical density
+   * gives real m/Jb/Jt RATIOS, but a guidewire is genuinely tiny-mass, so strictly-physical M/Δt² at
+   * h=0.5, Δt_s=1/240 is ~6 orders below the stiffness K. Phase B lifted ALL of M by ONE knob
+   * (8.0e5) tuned ONLY for the twist term — and that uniform lift was a bending-dynamics defect:
+   * it put the TRANSLATIONAL term m/Δt² ≈ 14,300 N/cm ~12× ABOVE the transverse bend stiffness
+   * 12EI/ℓ³ ≈ 1,152 N/cm (shaft EI=12), scaling every bending natural frequency by 1/√8e5 ≈ 1/894.
+   * A 10 cm exposed span's first mode fell ~25 Hz → 0.17 rad/s, which under the a0 = 1/τ = 12.5 s⁻¹
+   * mass damping is so overdamped its slow-root shape-recovery rate was ω₁²/a0 ≈ 2.4e-3 s⁻¹
+   * (τ ≈ 7 MINUTES): the live wire held every contact-imprinted curl while the calibrated-EI gates
+   * kept passing through the inertia-free relaxDirectStatic. The split (gated by
+   * dynamic_recovery.test.ts on the REAL stepDirect path):
+   *
+   * D_MASS_SCALE_TWIST — Jt ONLY. Unchanged 8.0e5: reproduces the validated twist-feel regime
+   * (wire-shaft Jt/Δt² ≈ 17.9 vs GJ/ℓ ≈ 18.4, steel ρ=7.9, r=0.05, h=0.5; canaries: the wind-up /
+   * whip / BE-decay gates in beamfem/dynamic.test.ts). NEVER re-couple it to GJ — that GJ-coupling
+   * was the old (~38× bend-inertia) defect.
+   *
+   * D_MASS_SCALE_TRANS — m AND Jb (bending modes mix deflection + section rotation, so the pair
+   * moves together). The BENDING-TRUE value is 8.0e2, derived at shaft EI=12, μ = ρA = 6.20e-7
+   * N·s²/cm², h=0.5, Δt_s=1/240, with the shipped damping a0 = 1/dampingTau = 12.5 s⁻¹ unchanged
+   * (mass scale and damping tune as a PAIR):
+   *   m/Δt² = 8e2·μ·h/Δt² ≈ 14.3 N/cm ≈ 0.012·(12EI/ℓ³)  — inertia no longer masks the calibrated EI
+   *   ω₁(10 cm clamped-free) = 3.516·√(EI/(μ_s·L⁴)) ≈ 5.5 rad/s ⇒ ζ = a0/(2ω₁) ≈ 1.14, essentially
+   *   critically damped. MEASURED on the live stepDirect bench (dynamic_recovery.test.ts): a tip
+   *   load expresses 115% of the analytic cantilever δ (vs 1% at the uniform 8e5) and springs back
+   *   93.9% within 1 s (t₉₀ = 0.85 s), zero overshoot. The 5e3–1e4 band can NEVER meet ≤1 s
+   *   recovery: even critically damped, t₉₀ ≥ 3.89/ω₁ ≈ 1.8 s at 5e3 — recovery is bounded by the
+   *   mode frequency itself, so no a0 retune rescues a heavier scale.
+   *
+   * *** WHY THE SHIPPED VALUE IS STILL 8.0e5 (= the twist scale; behaviorally identical to the
+   * pre-split uniform knob). EMPIRICAL BLOCKER, 2026-06-12: NAVIGATION IS LOAD-BEARING ON THE
+   * ARTIFICIAL TRANSLATIONAL INERTIA. With bending-true mass the seeded/curved column's stored
+   * bending energy releases on the same sub-second timescale as shape recovery (they are the SAME
+   * modes), and the current wall stick-slip friction + staggered projection stack cannot hold a
+   * springy wire against it: the wire straightens itself back down the iliac and feed advance
+   * accordions instead of transmitting. Measured shipped-coax shallow climb (gate ≥ 8.5 cm):
+   *   8e5 → 9.30 cm (green)   1e5 → 0.09   2e4 → 0.04   5e3 → 0.59   8e2 → 0.45  (all collapsed)
+   * — a regime cliff somewhere in (1e5, 8e5], not a tunable pocket; an UNCAPPED feed motor does not
+   * help (climb oscillates 0.45–2.5 cm, λ-draw ≈ 1.1e6 scaled ≈ old free-advance), so it is not a
+   * force-cap/forceScale miscalibration: the column genuinely cannot be held by friction alone.
+   * The old heavy mass acted as pseudo-friction (slide-back creep ~1000× slower than test
+   * windows). CONSEQUENCE: sub-second live bending dynamics must wait for wall support that can
+   * hold a springy wire (the Phase-J Schur contact / friction work); flipping this constant alone
+   * trades the audited curl-memory defect for a broken trainer. The defect stays encoded as the
+   * documented-red dynamic_recovery.test.ts (it.fails — CI flips it red the day this constant can
+   * honestly drop). The contact/coax/feed inverse-mass metrics are mean-normalized
+   * (dContactMassScale = mean(m), invMass = mean/m) and invariant to BOTH absolute scales, so the
+   * split plumbing itself is shipped and safe — only this VALUE awaits the contact work.
    */
-  private static D_MASS_SCALE = 8.0e5;
+  private static D_MASS_SCALE_TRANS = 8.0e5;
+  private static D_MASS_SCALE_TWIST = 8.0e5;
+  /**
+   * True when the translational conditioning is genuinely lighter than the twist conditioning —
+   * i.e. the bending-true regime is ACTIVE. The two inlet protections discovered on that bench
+   * (the node-0 motion limit and the introducer backstop) arm on this condition automatically, so
+   * whoever finally drops D_MASS_SCALE_TRANS gets them for free — and the heavy shipped regime,
+   * whose calibrated pushability/stall behavior they would disturb, keeps them off.
+   */
+  private static directBendingTrueMass(): boolean {
+    return CosseratRod.D_MASS_SCALE_TRANS < CosseratRod.D_MASS_SCALE_TWIST;
+  }
   /**
    * Newtons → scaled-λ-force conversion for the DIRECT-lane compliant feed motor (insertion.forceScale).
-   * The motor's felt force F ≈ λ_feed/Δt_s² is in SCALED units (D_MASS_SCALE inflates λ ~6 orders over
-   * strict SI). Measured on curved anatomy, free cranial advancement of the stiff FEM column draws a
+   * The motor's felt force F ≈ λ_feed/Δt_s² is in SCALED units (the mean-normalized inverse-mass
+   * metric — dContactMassScale — keeps λ ~6 orders over strict SI regardless of the absolute
+   * D_MASS_SCALE_* values, so this calibration survives the trans/twist split). Measured on curved anatomy, free cranial advancement of the stiff FEM column draws a
    * scaled feed force ~1.4e6 (mean) / ~2.1e6 (peak). With this scale a physical forceMax in the
    * deliverable-tip range (~1.2 N ⇒ 2.4e6 cap) clears the free-advance peak, while a low cap (~0.5 N ⇒
    * 1.0e6) sits BELOW the advance force so a blocked/jammed tip stalls and prolapses instead of
@@ -1349,7 +1411,14 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   /**
    * Diagnostic only: maximum positive vessel-envelope violation (cm) over nodes and segment midpoints.
    * Covered guidewire material clipped into an outer sheath channel is skipped because the vessel wall is
-   * intentionally not its active constraint there. Returns 0 when every sampled point is inside.
+   * intentionally not its active constraint there. DIVERGED covered nodes (coax pairing broken) are NOT
+   * skipped: the clip predicate exempts them, so their through-wall penetration is visible here WHILE
+   * they are flagged. CAVEAT: covered material that has escaped the sheath but sits BELOW the
+   * COAX_WALL_ESCAPE_TOL trigger (or whose flag has healed) is re-clipped and therefore invisible here
+   * — measured up to ≈5.3 cm of hidden penetration in the settled sheath-advance state. For an
+   * un-blindable harm metric use CoaxialAssembly.maxUncontainedWallPenetration() (per-node
+   * wallPenetrationAtNode, ignoring the clip, over out-of-sheath covered material).
+   * Returns 0 when every sampled point is inside.
    */
   maxWallPenetration(): number {
     const q: LumenQuery = {
@@ -1378,11 +1447,31 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return Math.max(0, maxPen);
   }
 
+  /**
+   * Signed vessel-wall penetration (cm) of node `i`, IGNORING the channel clip: positive ⇒ the node
+   * is outside the allowed lumen envelope (through the wall). Used by the coax divergence guard to
+   * detect a covered node that the sheath is dragging through the vessel wall (the harm the guard
+   * exists to stop), and to restore vessel contact only for nodes that are actually escaping. The
+   * query seeds from the node's current edge for graph-aware nearest-lumen selection.
+   */
+  wallPenetrationAtNode(i: number): number {
+    if (i < 0 || i >= this.n) return 0;
+    this.queryLumenForWall(this.x[i], this.currentEdge[i] ?? -1, this.lq);
+    const allowed = Math.max(0.02, this.lq.radius - this.params.rodRadius - CosseratRod.EPS_C);
+    return this.x[i].distanceTo(this.lq.center) - allowed;
+  }
+
   private isVesselContactClippedAtNode(i: number): boolean {
+    // A diverged covered node (coax pairing broken: its sheath fled past the break threshold) is
+    // EXEMPTED from the channel clip — it regains vessel-wall contact so it stays in the vessel
+    // instead of being projected through the wall toward the remote sheath.
+    if (this.coaxDiverged[i]) return false;
     return this.vesselContactClipLength > 0 && i * this.h < this.vesselContactClipLength;
   }
 
   private isVesselContactClippedAtSegment(s: number): boolean {
+    // Un-clip a segment incident to any diverged node so its midpoint sample regains wall contact.
+    if (this.coaxDiverged[s] || this.coaxDiverged[s + 1]) return false;
     return this.vesselContactClipLength > 0 && (s + 0.5) * this.h < this.vesselContactClipLength;
   }
 
@@ -1619,8 +1708,8 @@ export class CosseratRod implements Injectable, NodeContactTarget {
 
   /**
    * Lazily size + rebuild the dynamic-beam state for the current node count (called per substep).
-   * Mass is now physical (density × geometry × the GJ-decoupled D_MASS_SCALE), so it no longer
-   * depends on the substep Δt — the build is dt-independent.
+   * Mass is now physical (density × geometry × the GJ-decoupled D_MASS_SCALE_TRANS/TWIST split),
+   * so it no longer depends on the substep Δt — the build is dt-independent.
    */
   private ensureDirect(): void {
     const n = this.n;
@@ -1640,7 +1729,14 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     for (let e = 0; e < this.restLen.length; e++) this.dRestLen[e] = this.restLen[e];
     this.dElem = buildElemMats(this.material, this.dRestLen, this.input.steer, this.dElem);
     const reuseMass = this.dMass && this.dMass.m.length === n ? this.dMass : undefined;
-    this.dMass = buildLumpedMassForRod(n, this.dRestLen, this.material, CosseratRod.D_MASS_SCALE, reuseMass);
+    this.dMass = buildLumpedMassForRod(
+      n,
+      this.dRestLen,
+      this.material,
+      CosseratRod.D_MASS_SCALE_TRANS,
+      CosseratRod.D_MASS_SCALE_TWIST,
+      reuseMass
+    );
     this.updateDirectContactMetricScale();
     this.ensureExtLoadArrays();
     this.dBeamState = {
@@ -1787,6 +1883,21 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     if (!this.dMass || this.dNodeQ.length === 0) return;
     solveInletPositionMotor(this.x[0], this.directInletInvMass(), this.access, this.insertion, dtSeconds);
     solveInletOrientationMotor(this.dNodeQ[0], this.directInletInvInertia(), this.access, this.insertion, dtSeconds);
+    // INTRODUCER BACKSTOP (armed only in the bending-true mass regime — see directBendingTrueMass).
+    // The forceMax cap models the operator's limited PUSH (a blocked tip stalls + prolapses); it
+    // must NOT let a recoiling over-fed column EJECT the wire backwards through the operator's
+    // grip: with bending-true translational mass, stored column compression spits node 0 several cm
+    // proximal of the access plane, hyper-stretching segment 0 and dragging near-inlet material
+    // along the wall (measured pen ~0.35 cm in the solo short-feed gate). Physically the introducer
+    // valve + pinch grip resist backward slip kinematically, and material transport already refuses
+    // to retract past the command, so node 0 may lag the plane by at most one segment. At the
+    // shipped HEAVY conditioning the recoil is inertia-frozen and this clamp must stay OFF: armed,
+    // it acts as a ratchet pawl that deepens low-cap seating (blocked-tip seated 10.0 → 14.5 cm and
+    // the calibrated prolapse band collapsed when it was trialled heavy).
+    if (CosseratRod.directBendingTrueMass()) {
+      const back = _segAp.subVectors(this.x[0], this.access.x).dot(this.access.e);
+      if (back < -this.h) this.x[0].addScaledVector(this.access.e, -this.h - back);
+    }
   }
 
   private completeDirectFeedTransport(): void {
@@ -1976,7 +2087,13 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     }
   }
 
-  /** BeamParams for the dynamic path: a0=1/τ velocity-decay match, twist whip guard, staggered rounds. */
+  /**
+   * BeamParams for the dynamic path: a0=1/τ velocity-decay match, twist whip guard, staggered rounds.
+   * NOTE: a0 and D_MASS_SCALE_TRANS tune as a PAIR — at the bending-true trans scale (8e2) the 10 cm
+   * span's first bending mode sits at ζ = a0/(2ω₁) ≈ 1.14, critically damped (fastest non-ringing
+   * shape recovery, verified on the dynamic_recovery bench). Re-run dynamic_recovery.test.ts after
+   * touching either; see the D_MASS_SCALE_TRANS comment for why the shipped value is still heavy.
+   */
   private directParams(): BeamParams {
     return {
       substeps: 1,
@@ -1997,8 +2114,19 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   }
 
   private limitDirectMotionFromSnapshot(): void {
+    // INLET MOTION LIMIT (armed only in the bending-true mass regime — see directBendingTrueMass).
+    // The compliant-feed inlet node 0 keeps legacy w=0 (wall/coax contacts ignore it) but IS a free
+    // beam DOF, so in the bending-true regime it must be motion-limited like every other beam DOF:
+    // found empirically on that bench, an unlimited node 0 gets catapulted hundreds of cm/s by an
+    // inlet transient, overpowering the capped inlet motor and ratcheting the whole column
+    // downstream (measured 11 cm wire escape). The commanded feed itself moves the inlet only
+    // ≤ D_FEED_RATE·Δt_s ≈ 0.017 cm/substep, far below the cap. At the shipped HEAVY conditioning
+    // this limit must stay OFF: the calibrated deep pushability transport relies on large inertial
+    // node-0 excursions (limiting them collapses climb@36 from 43.5 → 9.2 cm) — yet another marker
+    // that today's navigation is powered by the artificial inertia, not friction-held mechanics.
+    const limitInlet = this.usesDirectCompliantFeed() && CosseratRod.directBendingTrueMass();
     for (let i = 0; i < this.n; i++) {
-      if (this.w[i] === 0) continue;
+      if (this.w[i] === 0 && !(limitInlet && i === 0)) continue;
       const snap = this.dSnapshot.x[i];
       if (!snap) continue;
       _segAp.subVectors(this.x[i], snap);
@@ -2232,6 +2360,94 @@ const COAX_DIRECT_VESSEL_CLIP_BLEND = COAX_PORTAL_BLEND;
  */
 const COAX_ARC_PAIR_WINDOW_CM = 1.0;
 /**
+ * Coax containment break threshold (cm). The inner-in-outer pairing is only physical while the
+ * covered wire node actually lives inside the sheath lumen. The sheath's own navigation is solved
+ * separately (a later bilateral-coupling work item makes the advancing sheath FOLLOW the wire); until
+ * then the wire and a diverging sheath can geometrically separate.
+ *
+ * DISCRIMINATOR — the guard fires on the ACTUAL HARM, not on sheath distance alone. A covered node is
+ * declared diverged when it is BOTH:
+ *   (a) genuinely separated from the sheath: true clamped distance to the nearest sheath segment
+ *       (closestOuterAtArc.trueDist) > COAX_DIVERGENCE_BREAK — confirms the pairing is a fiction (the
+ *       node is not merely pressed against the channel wall, it is nowhere near the sheath); AND
+ *   (b) actually being dragged THROUGH the vessel wall: its true vessel-wall penetration (ignoring the
+ *       channel clip, wallPenetrationAtNode) exceeds COAX_WALL_ESCAPE_TOL.
+ * Condition (b) is the key insight from the empirical audit: with the guard OFF, the covered wire is
+ * dragged ~47 cm through the wall in the sheath-advance bug AND ~4 cm in a deeply over-fed device-
+ * profile run — BOTH are real through-wall harm that the channel clip was HIDING from maxWallPenetration.
+ * Sheath distance alone cannot separate "harmlessly far from the sheath but still inside the vessel"
+ * from "dragged out of the vessel," because over-fed-but-contained transients reach the same multi-cm
+ * sheath distance as the real escape. The wall-penetration test targets the harm directly and cannot
+ * self-amplify (a node that is NOT through the wall is never released, so the calibrated contained
+ * regime is untouched). What it achieves is a CAP, not a cure (measured on the sheath-advance
+ * reproduction after the both-trigger retention fix): the previously unbounded ≈47 cm through-wall
+ * dragging now peaks ≈8 cm and the restored vessel contact pulls flagged nodes back below the trigger
+ * — but covered out-of-sheath material can then HOVER just under COAX_WALL_ESCAPE_TOL (measured
+ * ≈5.3 cm settled penetration, re-clipped and invisible to maxWallPenetration). Full honest
+ * containment of that residual needs the bilateral-coupling work item; until then the
+ * maxUncontainedWallPenetration() diagnostic and the documented-red it.fails gates keep it visible.
+ *
+ * COAX_DIVERGENCE_BREAK = 0.5 cm: ~12× the ≈0.04 cm channel clearance, so a node merely pressed against
+ * the sheath channel wall (still inside it) never trips (a); only genuine multi-cm sheath separation
+ * does. Combined with the wall-penetration gate (b), the guard is inert unless the wire is truly
+ * escaping the vessel.
+ *
+ * RE-DERIVATION REQUIRED: this threshold (and COAX_WALL_ESCAPE_TOL) was tuned empirically in the
+ * current heavy-inertia conditioning regime (D_MASS_SCALE_TRANS = 8.0e5). Both the escape dynamics and
+ * the transient peaks that the calibration separates will change when D_MASS_SCALE_TRANS drops toward
+ * 8e2 and again when bilateral coax coupling lands (the sheath following the wire removes the escape
+ * mechanism itself) — re-run the derivation measurements in this comment block at both transitions.
+ */
+const COAX_DIVERGENCE_BREAK = 0.5;
+/** Test-facing copy of the divergence break threshold (cm) so gates assert against the real value. */
+export const COAX_DIVERGENCE_BREAK_CM = COAX_DIVERGENCE_BREAK;
+/**
+ * Vessel-wall penetration (cm) a covered node must exceed — on top of being far from the sheath — for
+ * the guard to declare it diverged and restore its vessel contact. This is the ACTUAL-HARM trigger.
+ *
+ * Why 6.0 cm and not the 0.05 cm navigation budget: empirically (guard off, all-node wall scan on the
+ * shipped presets), the channel clip HIDES two qualitatively different through-wall conditions:
+ *   - a deeply over-fed but stable prolapse — the device-stiffness gates at deploy 24 over a held 6.5
+ *     sheath reach ≈ 4.0 cm hidden penetration; here the channel clip is the LESSER evil — it holds
+ *     the over-fed base stably against the sheath, and releasing those nodes to vessel contact does
+ *     NOT corral them (the over-feed keeps pushing them out) but instead churns and DESTABILIZES the
+ *     calibrated push/chirality trajectories. This is a pre-existing mild condition, not the audit bug;
+ *   - the audit's catastrophe — a sheath advanced past a held wire — drags the covered wire ≈ 47 cm
+ *     through the wall. THIS is the harm the guard must catch: containment is a total fiction and
+ *     vessel contact is unambiguously correct.
+ * 6.0 cm sits cleanly between them (1.5× the ≈4 cm over-fed transient, ~8× below the ≈47 cm
+ * catastrophe): the guard stays inert through the calibrated over-fed regime (so it neither perturbs
+ * those gates nor injects L/R asymmetry) and fires only on gross escape. Curing the milder ≈4 cm
+ * prolapse penetration is deferred to the bilateral-coupling work item (which fixes the divergence at
+ * its source by making the sheath follow the wire); it is kept VISIBLE today by the report-only
+ * maxUncontainedWallPenetration() diagnostic and encoded as a documented-red it.fails gate in
+ * cosserat.test.ts (it goes green the day the harm is actually cured).
+ *
+ * KNOWN BLINDNESS — inter-vessel spacing caps the trigger: wallPenetrationAtNode measures distance to
+ * the GLOBALLY nearest lumen edge (graph-aware re-acquire), so as an escaping node crosses toward a
+ * NEIGHBORING vessel its registered "penetration" resets against that vessel's envelope. The reported
+ * penetration is therefore capped by the local inter-vessel spacing: a wire dragged across the
+ * vessel-dense visceral region may never register 6 cm even while physically traversing tissue between
+ * vessels. The ≈47 cm catastrophe is caught only because its trajectory crosses EMPTY space (no nearby
+ * lumen to re-acquire). A spacing-aware escape metric (e.g. signed distance to the lofted tissue
+ * volume, or path-integrated wall crossings) is needed before this trigger can be trusted in the
+ * visceral region.
+ *
+ * RE-DERIVATION REQUIRED: tuned in the heavy-inertia regime (D_MASS_SCALE_TRANS = 8.0e5); re-derive
+ * when D_MASS_SCALE_TRANS drops toward 8e2 and when bilateral coupling lands (see
+ * COAX_DIVERGENCE_BREAK).
+ */
+const COAX_WALL_ESCAPE_TOL = 6.0;
+/** Test-facing copy of the wall-escape trigger (cm) so gates assert the cap against the real value. */
+export const COAX_WALL_ESCAPE_TOL_CM = COAX_WALL_ESCAPE_TOL;
+/**
+ * Hysteresis band (cm) on the divergence triggers: once diverged, a node stays diverged until BOTH its
+ * sheath distance falls back below COAX_DIVERGENCE_BREAK − this band AND its wall penetration relaxes
+ * below COAX_WALL_ESCAPE_TOL − this band. Prevents covered⇄diverged chatter at the boundary; the node
+ * re-converges (containment restored) once the divergence genuinely heals.
+ */
+const COAX_DIVERGENCE_REPAIR = 0.03;
+/**
  * How much of the radial coax-normal correction the OUTER sheath absorbs on the LEGACY (XPBD) lane.
  * The legacy lane still uses flat unit inverse-mass (no calibrated per-node masses), so a two-way
  * share there lets the wire shove the catheter sideways instead of staying inside its cylinder. Keep
@@ -2274,6 +2490,7 @@ const COAX_CENTERING_GAIN = 0.02;
 const COAX_DIRECT_CENTERING_GAIN = 0.02;
 const COAX_DIRECT_RIGID_CHANNEL_PASSES = 4;
 
+
 /**
  * Coaxial assembly: an OUTER device (sheath/catheter) sliding over an INNER device (guidewire).
  * Each is its own free CosseratRod with its own MaterialProfile, access, insertion BC, and wall
@@ -2297,7 +2514,7 @@ export class CoaxialAssembly {
   /** Persistent coax contacts indexed by INNER node (anchors persist across frames). */
   private coax: (CoaxContact | null)[] = [];
   private activeCoax: CoaxContact[] = [];
-  private readonly closest: CoaxClosest = { segment: -1, u: 0, rho: 0, pastTip: -1 };
+  private readonly closest: CoaxClosest = { segment: -1, u: 0, rho: 0, trueDist: 0, pastTip: -1 };
   private readonly coaxAlphaN: number;
   private readonly coaxMuStatic: number;
   private readonly coaxMuKinetic: number;
@@ -2364,11 +2581,15 @@ export class CoaxialAssembly {
     const hi = Math.min(segs - 1, k + windowSegs);
     let bestSeg = -1;
     let bestU = 0;
-    let bestRho = Infinity;
+    let bestRho = Infinity; // PERPENDICULAR offset to the WINDOWED pairing seg — engagement (unchanged)
     for (let j = lo; j <= hi; j++) {
       const a = outer.x[j];
       const b = outer.x[j + 1];
       const u = closestOnSeg(innerPoint, a, b, _diagSample);
+      if (b.distanceToSquared(a) <= 1e-18) continue;
+      // PERPENDICULAR offset to the segment's infinite line — the radial containment-pairing metric.
+      // Selecting bestSeg by PERPENDICULAR distance over the ARC WINDOW keeps the (calibrated) radial
+      // pairing + engagement identical to baseline so free axial sliding / pushability are untouched.
       _segAb.subVectors(b, a);
       const len = _segAb.length();
       if (len <= 1e-9) continue;
@@ -2383,9 +2604,26 @@ export class CoaxialAssembly {
       }
     }
     if (bestSeg < 0) return false;
+    // The HONEST "how far is the sheath, really" metric for the divergence guard + diagnostics is the
+    // GLOBAL minimum true clamped distance over ALL outer segments — NOT restricted to the arc window.
+    // This is deliberately decoupled from the (arc-windowed, perpendicular) pairing: an over-fed
+    // covered base can loop so a node sits radially near a sheath segment that is OUTSIDE its arc
+    // window — that node is physically still inside the sheath cylinder and must NOT be called
+    // diverged just because its arc-matched window segment is axially far. Real escape (the audit bug)
+    // is when EVERY sheath segment is far: only then does this global minimum exceed the break.
+    let bestTrue = Infinity;
+    for (let j = 0; j < segs; j++) {
+      const a = outer.x[j];
+      const b = outer.x[j + 1];
+      if (b.distanceToSquared(a) <= 1e-18) continue;
+      closestOnSeg(innerPoint, a, b, _diagSample);
+      const trueDist = innerPoint.distanceTo(_diagSample);
+      if (trueDist < bestTrue) bestTrue = trueDist;
+    }
     out.segment = bestSeg;
     out.u = bestU;
     out.rho = bestRho;
+    out.trueDist = bestTrue;
     out.pastTip = Math.max(0, arc - deployed);
     return true;
   }
@@ -2403,22 +2641,63 @@ export class CoaxialAssembly {
     const inner = this.inner;
     const outer = this.outer;
     if (this.coax.length !== inner.n) this.coax.length = inner.n;
+    // Keep the per-node divergence mask sized to the (growing/shrinking) inner rod. Entries persist
+    // across substeps so the hysteresis dead-band below can read the previous state; a node only
+    // changes state when it crosses break (→diverged) or repair (→contained).
+    if (inner.coaxDiverged.length !== inner.n) {
+      inner.coaxDiverged.length = inner.n;
+      for (let i = 0; i < inner.n; i++) if (inner.coaxDiverged[i] === undefined) inner.coaxDiverged[i] = false;
+    }
     for (let i = 0; i < inner.n; i++) {
       if (inner.w[i] === 0) {
         this.coax[i] = null; // kinematic boundary node: no coax contact
+        inner.coaxDiverged[i] = false;
         continue;
       }
       const arc = i * inner.h;
       const axialPastTip = arc - outer.deployedLength();
       if (axialPastTip >= COAX_PORTAL_BLEND) {
         this.coax[i] = null;
+        inner.coaxDiverged[i] = false; // past the open portal: vessel-guided, not a coax pairing
         continue;
       }
       const paired = this.closestOuterAtArc(inner.x[i], arc, this.closest);
       if (!paired) {
         this.coax[i] = null;
+        inner.coaxDiverged[i] = false;
         continue;
       }
+      // Divergence guard — fire on the ACTUAL HARM (see COAX_DIVERGENCE_BREAK doc).
+      //   ENTER (was contained): a node becomes diverged only when it is BOTH genuinely far from the
+      //     sheath (trueDist > break: the pairing is a fiction, not just channel-wall contact) AND
+      //     actually being dragged through the vessel wall (wallPenetrationAtNode > tol).
+      //   RETAIN (was diverged): it stays diverged until BOTH triggers heal — trueDist back under
+      //     break − repair AND wall penetration back under tol − repair. Clearing on EITHER healing
+      //     would make divergence transient by construction: restoring vessel contact heals the wall
+      //     penetration first (that is its job), and an early clear would re-clip the node out of
+      //     maxWallPenetration and hand it back to a pairing that is still a fiction (trueDist still
+      //     past break), re-blinding the diagnostic and re-enabling the through-wall projection.
+      //   A node that has left the sheath PERMANENTLY (trueDist never heals) therefore stays diverged
+      //   permanently: it keeps real vessel-wall contact and stays visible to the diagnostics — which
+      //   is the correct steady state for material that is genuinely no longer inside the sheath.
+      const wasDiverged = inner.coaxDiverged[i];
+      let diverged: boolean;
+      if (wasDiverged) {
+        const sheathHealed = this.closest.trueDist <= COAX_DIVERGENCE_BREAK - COAX_DIVERGENCE_REPAIR;
+        const wallHealed =
+          inner.wallPenetrationAtNode(i) <= COAX_WALL_ESCAPE_TOL - COAX_DIVERGENCE_REPAIR;
+        diverged = !(sheathHealed && wallHealed);
+      } else {
+        diverged =
+          this.closest.trueDist > COAX_DIVERGENCE_BREAK &&
+          inner.wallPenetrationAtNode(i) > COAX_WALL_ESCAPE_TOL;
+      }
+      if (diverged) {
+        inner.coaxDiverged[i] = true;
+        this.coax[i] = null;
+        continue;
+      }
+      inner.coaxDiverged[i] = false;
       // open portal: fully past the outer tip ⇒ no outer containment (governed by vessel lumen)
       const portal = portalWeight(Math.max(0, axialPastTip), COAX_PORTAL_BLEND);
       // allowed inner clearance: R_outer,lumen − r_inner. A contact is engaged ONLY when the inner
@@ -2491,6 +2770,19 @@ export class CoaxialAssembly {
         const pIn = this.inner.x[c.node];
         const a = this.outer.x[k];
         const b = this.outer.x[k + 1];
+        // RADIAL channel projection (perpendicular to the outer tangent), matching
+        // solveCoaxialNormalContact: the containment correction must not inject an axial tie, or the
+        // wire cannot slide/telescope through the sheath. HONESTY NOTE: the guard removes from
+        // activeCoax only nodes that are BOTH far from the sheath AND through the vessel wall past
+        // COAX_WALL_ESCAPE_TOL — so a node that has LEFT the sheath (trueDist past break) but is
+        // below that wall trigger still reaches here and is hard-projected onto its windowed
+        // segment's EXTENDED LINE, which can pass outside the vessel. Measured on the sheath-advance
+        // reproduction: the settled escaped material sits at trueDist ≈5.3 cm with perpendicular
+        // offset ≈0.04 (pinned on the extended line) and ≈5.3 cm of clip-hidden wall penetration just
+        // under the trigger. The guard caps this residual at ≈COAX_WALL_ESCAPE_TOL (vs the unbounded
+        // ≈47 cm before); removing it entirely needs the bilateral-coupling work item. Tracked by
+        // maxUncontainedWallPenetration() and the documented-red it.fails gates.
+        if (b.distanceToSquared(a) <= 1e-18) continue;
         closestOnSeg(pIn, a, b, _diagSample);
         _segAb.subVectors(b, a);
         const len = _segAb.length();
@@ -2648,8 +2940,43 @@ export class CoaxialAssembly {
     return _diagSample.subVectors(this.inner.tip(), this.outer.tip()).dot(this.outerTipTangent(_segAb));
   }
 
-  /** Max radial offset of still-covered inner wire nodes from the same-arc catheter lumen centerline. */
+  /**
+   * Max TRUE clamped distance (cm) of still-covered inner wire nodes to the same-arc catheter lumen.
+   * `closestOuterAtArc` now reports the distance to the CLAMPED closest point on the paired segment
+   * (not the perpendicular offset to its infinite line), so this is an honest containment metric: a
+   * node that has axially escaped its paired sheath segment reads its real distance, not a phantom
+   * lateral offset. Diverged (guard-broken) nodes are still included here — they ARE covered material
+   * that has separated — so this number stays large and visible when containment fails, instead of
+   * silently reading the clearance. Same metric as maxCoveredTrueDistance(); kept under the original
+   * name for the existing gate.
+   */
   maxCoveredInnerRho(): number {
+    let max = 0;
+    const coveredArc = this.outer.deployedLength() - 0.5;
+    for (let i = 1; i < this.inner.n - 1; i++) {
+      const arc = i * this.inner.h;
+      if (arc >= coveredArc) continue;
+      if (this.closestOuterAtArc(this.inner.x[i], arc, this.closest)) {
+        max = Math.max(max, this.closest.trueDist);
+      }
+    }
+    return max;
+  }
+
+  /** Alias for the honest containment metric (true clamped distance of covered nodes to the sheath). */
+  maxCoveredTrueDistance(): number {
+    return this.maxCoveredInnerRho();
+  }
+
+  /**
+   * Max PERPENDICULAR (windowed, infinite-line) offset of still-covered inner nodes to their paired
+   * sheath segment — the legacy radial-pairing coordinate (closestOuterAtArc.rho). NOT a substitute
+   * for the honest true-distance metric (it discards axial escape), but it IS a genuine bound on the
+   * radial play the channel constraint actually solves against, so gates that proved "the covered
+   * wire rides the channel cylinder, not an independent radial path" keep their binding radial
+   * property here while maxCoveredTrueDistance() carries the honest escape metric.
+   */
+  maxCoveredPerpRho(): number {
     let max = 0;
     const coveredArc = this.outer.deployedLength() - 0.5;
     for (let i = 1; i < this.inner.n - 1; i++) {
@@ -2660,6 +2987,36 @@ export class CoaxialAssembly {
       }
     }
     return max;
+  }
+
+  /**
+   * REPORT-ONLY honest harm diagnostic (no force changes): max vessel-wall penetration (cm) over
+   * covered inner nodes whose true distance to the sheath exceeds the divergence break — i.e.
+   * material whose coax pairing is a fiction — measured via wallPenetrationAtNode, which IGNORES the
+   * channel clip. Unlike maxWallPenetration() this cannot be re-blinded by the clip: it sees the
+   * hidden through-wall harm of covered-but-escaped material whether or not the guard has flagged it
+   * (the guard's wall trigger is deliberately high, COAX_WALL_ESCAPE_TOL, so sub-trigger harm — e.g.
+   * the known ≈4 cm over-fed prolapse penetration — shows up here and ONLY here).
+   */
+  maxUncontainedWallPenetration(): number {
+    let max = 0;
+    const coveredArc = this.outer.deployedLength() - 0.5;
+    for (let i = 1; i < this.inner.n - 1; i++) {
+      const arc = i * this.inner.h;
+      if (arc >= coveredArc) continue;
+      if (!this.closestOuterAtArc(this.inner.x[i], arc, this.closest)) continue;
+      if (this.closest.trueDist <= COAX_DIVERGENCE_BREAK) continue;
+      max = Math.max(max, this.inner.wallPenetrationAtNode(i));
+    }
+    return Math.max(0, max);
+  }
+
+  /** Number of covered inner nodes currently flagged as diverged (coax pairing broken this substep). */
+  divergedCoaxCount(): number {
+    let c = 0;
+    const mask = this.inner.coaxDiverged;
+    for (let i = 0; i < this.inner.n; i++) if (mask[i]) c++;
+    return c;
   }
 
   /** Sum of the stored coax normal multipliers (diagnostics/tests — the support load). */

@@ -71,16 +71,20 @@ export function kappa0ForElement(m: MaterialProfile, steer: number, out = new Qu
 
 /**
  * PHYSICAL lumped per-node mass/inertia from the rod's real section geometry × real material density
- * (g/cm³ from each segment's MaterialProfile.density, converted ONCE to scene units), with the single
- * GJ-DECOUPLED absolute conditioning `scale` (see beamfem/mass.ts header + cosserat.ts D_MASS_SCALE).
- * This carries physical m/Jb/Jt RATIOS (wire↔sheath mobility, contact/coax inverse-mass metric) while
- * keeping M/Δt² comparable to the stiffness K so Newton stays well-conditioned and twist stays felt.
+ * (g/cm³ from each segment's MaterialProfile.density, converted ONCE to scene units), with the
+ * GJ-DECOUPLED ANISOTROPIC conditioning scales (see beamfem/mass.ts header + cosserat.ts
+ * D_MASS_SCALE_TRANS / D_MASS_SCALE_TWIST): `scaleTrans` on m+Jb (bending dynamics), `scaleTwist` on
+ * Jt (the validated twist-feel conditioning). This carries physical RATIOS within each DOF family
+ * (wire↔sheath mobility, contact/coax inverse-mass metric) while keeping the twist term Jt/Δt² ≈ GJ/ℓ
+ * felt; a bending-true `scaleTrans` additionally lets bending modes recover shape on sub-second
+ * timescales (see cosserat.ts D_MASS_SCALE_TRANS for the shipped value and its empirical blocker).
  */
 export function buildLumpedMassForRod(
   n: number,
   restLen: Float64Array | number[],
   material: MaterialField,
-  scale: number,
+  scaleTrans: number,
+  scaleTwist: number,
   out?: LumpedMass
 ): LumpedMass {
   const segs = material.perSegment.length;
@@ -92,7 +96,7 @@ export function buildLumpedMassForRod(
     // physical density g/cm³ → scene units (N·s²·cm⁻⁴), ONCE; NOT GJ-derived (the old defect).
     rho[e] = densityFromGramsPerCm3(material.perSegment[e].density);
   }
-  return assembleMass(n, rl, radii, rho, scale, out);
+  return assembleMass(n, rl, radii, rho, scaleTrans, scaleTwist, out);
 }
 
 /**

@@ -1,0 +1,16 @@
+{
+  "url": "http://localhost:5179/",
+  "diagnostics": {
+    "page": {
+      "href": "chrome-error://chromewebdata/",
+      "readyState": "complete",
+      "title": "localhost",
+      "bodyText": "This site can’t be reached\n\nlocalhost refused to connect.\n\nTry:\n\nChecking the connection\nChecking the proxy and the firewall\nERR_CONNECTION_REFUSED\nReload\nDetails",
+      "hasCanvas": false,
+      "hasDebugApi": false,
+      "hasSnapshot": false,
+      "scriptSources": []
+    },
+    "events": []
+  }
+}

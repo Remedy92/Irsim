@@ -58,7 +58,7 @@ describe("coax — closest outer segment pairing", () => {
   it("pairs an inner node to the nearest outer segment and reports its perpendicular offset", () => {
     // outer along +y at x=0; inner node offset +x by 0.3 at mid-height
     const outer = mockRod([new Vector3(0, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 2, 0)]);
-    const out: CoaxClosest = { segment: -1, u: 0, rho: 0, pastTip: -1 };
+    const out: CoaxClosest = { segment: -1, u: 0, rho: 0, trueDist: 0, pastTip: -1 };
     const ok = closestOuterSegment(new Vector3(0.3, 0.5, 0), outer, out);
     expect(ok).toBe(true);
     expect(out.segment).toBe(0); // first segment owns mid-height of [0,1]
@@ -68,7 +68,7 @@ describe("coax — closest outer segment pairing", () => {
 
   it("flags an inner node beyond the outer tip (open portal)", () => {
     const outer = mockRod([new Vector3(0, 0, 0), new Vector3(0, 1, 0)]);
-    const out: CoaxClosest = { segment: -1, u: 0, rho: 0, pastTip: -1 };
+    const out: CoaxClosest = { segment: -1, u: 0, rho: 0, trueDist: 0, pastTip: -1 };
     closestOuterSegment(new Vector3(0.0, 1.5, 0), outer, out); // 0.5 cm past the tip
     expect(out.pastTip).toBeCloseTo(0.5, 6);
   });

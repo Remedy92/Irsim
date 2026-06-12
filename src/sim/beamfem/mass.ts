@@ -19,15 +19,30 @@
  *   m = ρ·A·ℓ,   Jb = ρ·I·ℓ,   Jt = ρ·J_p·ℓ.
  * The wire↔sheath mobility ratio and the contact/coax inverse-mass metric are now real physics.
  *
- * THE CONDITIONING SCALE (the "trap", resolved per the Phase-B plan). A real guidewire is genuinely
- * tiny-mass: strictly-physical M/Δt² at h=0.5, Δt_s=1/240 is ~6 orders below the stiffness K, which
- * would (i) ill-condition Newton and (ii) erase the felt torsional wind-up/whip the trainer wants.
- * The resolution is to keep the physical mass RATIOS (above) but multiply by a SINGLE tuned absolute
- * conditioning scale `MASS_SCALE`, DECOUPLED from GJ. The scale is chosen (see cosserat.ts D_MASS_SCALE)
- * so the wire-shaft twist term M/Δt² ≈ GJ/ℓ — i.e. it reproduces the previous, validated twist
- * conditioning regime while now carrying physical ratios. Absolute mass is a free knob for a heavily
- * damped trainer; the ratios are physics, the absolute level is the tuned knob. NEVER re-couple the
- * scale to GJ — that GJ-coupling was the old defect.
+ * THE CONDITIONING SCALES (the "trap", resolved per the Phase-B plan; SPLIT post-Phase-G). A real
+ * guidewire is genuinely tiny-mass: strictly-physical M/Δt² at h=0.5, Δt_s=1/240 is ~6 orders below
+ * the stiffness K, which would (i) ill-condition Newton and (ii) erase the felt torsional
+ * wind-up/whip the trainer wants. The resolution is to keep the physical mass RATIOS (above) but
+ * multiply by tuned absolute conditioning scales, DECOUPLED from GJ.
+ *
+ * Phase B used ONE scale for m/Jb/Jt, chosen so the wire-shaft twist term Jt/Δt² ≈ GJ/ℓ. That was
+ * validated ONLY for twist; applied uniformly it put the TRANSLATIONAL m/Δt² ~12× ABOVE the
+ * transverse bend stiffness 12EI/ℓ³, scaling every bending natural frequency down by 1/√8e5 ≈ 1/894
+ * and (with a0 = 1/τ mass damping) overdamping shape recovery to ~minutes — the live wire held every
+ * contact-imprinted curl while the inertia-free static gates kept passing. The split fixes this:
+ *
+ *   `scaleTwist` — Jt ONLY. Keeps the validated twist-feel conditioning Jt/Δt² ≈ GJ/ℓ
+ *     (cosserat.ts D_MASS_SCALE_TWIST). NEVER re-couple it to GJ — that GJ-coupling was the old
+ *     (~38× bend-vs-twist) defect; it is one absolute knob carrying physical Jt ratios.
+ *   `scaleTrans` — m AND Jb (the translational/bending pair must move together: bending modes mix
+ *     deflection and section rotation). A bending-true value makes the live dynamics express the
+ *     calibrated EI on sub-second timescales; see cosserat.ts D_MASS_SCALE_TRANS for the derivation
+ *     AND the empirical blocker that keeps the shipped value pinned to the twist scale for now.
+ *
+ * Absolute mass is a free knob for a heavily damped trainer; the ratios are physics, the absolute
+ * levels are the tuned knobs. The contact/coax/feed inverse-mass metrics are mean-normalized
+ * (cosserat.ts dContactMassScale/dContactInertiaScale), so they are invariant to BOTH absolute
+ * scales by construction — only the implicit beam dynamics feel them.
  */
 
 export interface Section {
@@ -64,16 +79,19 @@ export interface LumpedMass {
 /**
  * Half-segment PHYSICAL lumped mass: each element contributes m=ρAℓ, Jb=ρIℓ, Jt=ρ·J_p·ℓ from its
  * real section (radii[e]) and real per-element density (rho[e], already in N·s²·cm⁻⁴), split equally
- * to its two nodes. The single absolute `scale` (the GJ-DECOUPLED conditioning knob — see file header)
- * multiplies every term, preserving the physical m/Jb/Jt ratios while lifting M/Δt² to be comparable
- * to the stiffness K. `radii[e]`, `rho[e]`, `restLen[e]` are per-element (length n-1).
+ * to its two nodes. The GJ-DECOUPLED absolute conditioning knobs (see file header) are ANISOTROPIC:
+ * `scaleTrans` multiplies the translational mass m and the bending inertia Jb (the bending-dynamics
+ * pair), `scaleTwist` multiplies the twist inertia Jt (the validated twist-feel conditioning). Each
+ * preserves the physical ratios within its own DOF family. `radii[e]`, `rho[e]`, `restLen[e]` are
+ * per-element (length n-1).
  */
 export function assembleMass(
   n: number,
   restLen: Float64Array,
   radii: Float64Array,
   rho: Float64Array,
-  scale: number,
+  scaleTrans: number,
+  scaleTwist: number,
   out?: LumpedMass
 ): LumpedMass {
   const m = out?.m ?? new Float64Array(n);
@@ -84,10 +102,10 @@ export function assembleMass(
   Jt.fill(0);
   for (let e = 0; e < n - 1; e++) {
     const sec = computeSection(radii[e]);
-    const rhoS = rho[e] * scale; // physical density × the single GJ-decoupled conditioning scale
-    const me = rhoS * sec.A * restLen[e]; // element translational mass  (= ρ·A·ℓ)
-    const jbe = rhoS * sec.I * restLen[e]; // bending inertia (diametral 2nd moment, = ρ·I·ℓ)
-    const jte = rhoS * sec.Jp * restLen[e]; // twist inertia (polar, = ρ·J_p·ℓ)
+    const rhoT = rho[e] * scaleTrans; // physical density × the translational/bending conditioning
+    const me = rhoT * sec.A * restLen[e]; // element translational mass  (= ρ·A·ℓ)
+    const jbe = rhoT * sec.I * restLen[e]; // bending inertia (diametral 2nd moment, = ρ·I·ℓ)
+    const jte = rho[e] * scaleTwist * sec.Jp * restLen[e]; // twist inertia (polar, = ρ·J_p·ℓ)
     const half = 0.5;
     m[e] += half * me; m[e + 1] += half * me;
     Jb[e] += half * jbe; Jb[e + 1] += half * jbe;

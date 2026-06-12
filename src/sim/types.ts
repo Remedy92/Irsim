@@ -102,7 +102,8 @@ export interface InsertionState {
   /**
    * Feed-force cap in PHYSICAL Newtons (operator push ~0.36–0.81 N; deliverable tip ~1.1–1.6 N). The
    * solver maps the per-substep multiplier λ_feed to a felt force F ≈ λ_feed/Δt_s² in SCALED units
-   * (the absolute mass conditioning knob D_MASS_SCALE inflates λ by ~6 orders over strict SI). The
+   * (the mean-normalized inverse-mass metric of the absolute mass conditioning — cosserat.ts
+   * D_MASS_SCALE_TRANS/TWIST — inflates λ by ~6 orders over strict SI). The
    * cap applied to λ_feed is therefore `forceMax · forceScale · Δt_s²`. forceMax = 0 ⇒ a hard stall.
    */
   forceMax: number;

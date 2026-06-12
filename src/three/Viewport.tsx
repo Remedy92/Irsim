@@ -15,10 +15,12 @@ import {
   OrthographicCamera,
   PerspectiveCamera,
   PlaneGeometry,
+  Quaternion,
   RGBAFormat,
   Scene,
   type ShaderMaterial,
   SphereGeometry,
+  TorusGeometry,
   TubeGeometry,
   Vector3,
   WebGLRenderTarget
@@ -128,6 +130,9 @@ declare global {
  * Rebuild a TubeGeometry from a Cosserat rod's live node positions. Disposes the previous
  * geometry first. The rod arrays grow/shrink as material is fed, so the curve is rebuilt
  * every frame (Catmull-Rom needs ≥2 points; the rod keeps minNodes=3).
+ *
+ * radialSegments=12 → apothem penalty cos(π/12)≈0.966, negligible.
+ * tubularSegments = 3× node count gives ~3 rings/node-spacing for smooth bends.
  */
 function rebuildTube(mesh: Mesh, nodes: Vector3[], radius: number): void {
   // Guard against a non-finite node: one NaN/undefined position poisons CatmullRomCurve3's
@@ -141,7 +146,7 @@ function rebuildTube(mesh: Mesh, nodes: Vector3[], radius: number): void {
   mesh.geometry.dispose();
   const pts = nodes.slice();
   const curve = new CatmullRomCurve3(pts);
-  mesh.geometry = new TubeGeometry(curve, Math.max(1, pts.length), radius, 6, false);
+  mesh.geometry = new TubeGeometry(curve, Math.max(1, pts.length * 3), radius, 12, false);
 }
 
 function tuple(p: Vector3): [number, number, number] {
@@ -331,14 +336,17 @@ function Engine() {
       meshes.push(mesh);
     });
 
-    // sheath (outer coaxial device) — wider, slightly less radio-dense than the wire.
-    const sheathFluoro = makeAttenuationMaterial(4.5);
+    // sheath (outer coaxial device) — opaque blue-grey so the contained wire is hidden;
+    // only the protruding wire segment beyond the sheath tip is visible.
+    // Fluoro: sheath sigma 1.2 (faint); wire sigma 10.0 (dense metal) — covered region
+    // reads darkest, bare wire dark, sheath faint. See per-frame re-set ~605.
+    const sheathFluoro = makeAttenuationMaterial(1.2);
     const sheathMat3d = new MeshStandardMaterial({
-      color: 0xaab3bb,
-      metalness: 0.55,
-      roughness: 0.4,
-      transparent: true,
-      opacity: 0.7
+      color: 0x3d5a73,
+      metalness: 0.45,
+      roughness: 0.5,
+      transparent: false,
+      opacity: 1.0
     });
     const sheath = new Mesh(new BufferGeometry(), sheathFluoro);
     sheath.userData = { mat3d: sheathMat3d, fluoro: sheathFluoro, atten: 1, kind: "sheath" } satisfies MeshMaterials;
@@ -347,7 +355,8 @@ function Engine() {
     meshes.push(sheath);
 
     // guidewire (inner) — thin, bright metal, most radio-dense. Geometry rebuilt each frame.
-    const wireFluoro = makeAttenuationMaterial(7.0);
+    // sigma 10.0: bare wire renders near-black (dense metal); sheath at 1.2 renders faint.
+    const wireFluoro = makeAttenuationMaterial(10.0);
     const wireMat3d = new MeshStandardMaterial({
       color: 0xeef3f7,
       metalness: 0.85,
@@ -368,6 +377,18 @@ function Engine() {
     );
     scene.add(target);
 
+    // sheath tip-mouth ring: a dark torus at the sheath distal tip, oriented along the
+    // tip tangent, so the operator can see the bore the wire exits from.
+    // outerR = sheathRenderR (outer.rodRadius + 0.05), innerR ≈ wireRenderR (inner.rodRadius).
+    // Geometry is rebuilt each frame (radii depend on the assembly) — placeholder here.
+    const sheathRingMat3d = new MeshBasicMaterial({ color: 0x1a2530 });
+    const sheathRingFluoro = makeAttenuationMaterial(1.2);
+    const sheathRing = new Mesh(new BufferGeometry(), sheathRingMat3d);
+    sheathRing.userData = { mat3d: sheathRingMat3d, fluoro: sheathRingFluoro, atten: 1, kind: "sheath" } satisfies MeshMaterials;
+    sheathRing.frustumCulled = false;
+    scene.add(sheathRing);
+    meshes.push(sheathRing);
+
     const rtOpts = { type: HalfFloatType, format: RGBAFormat, depthBuffer: false };
     const rt = new WebGLRenderTarget(1, 1, rtOpts);
     const rtBase = new WebGLRenderTarget(1, 1, rtOpts); // DSA mask buffer
@@ -379,7 +400,7 @@ function Engine() {
     // Per-branch contrast for the fill sweep — filled in place each frame (no per-frame alloc).
     const branchC = new Array<number>(anatomy.branches.length).fill(0);
 
-    return { scene, camera, meshes, sheath, wire, target, rt, rtBase, tonemap, postScene, postCam, branchC };
+    return { scene, camera, meshes, sheath, wire, sheathRing, target, rt, rtBase, tonemap, postScene, postCam, branchC };
   }, [anatomy]);
 
   const dist = useRef(95);
@@ -389,6 +410,12 @@ function Engine() {
   const projTip = useRef(new Vector3()); // scratch for screen-space projection (no per-frame alloc)
   const projTgt = useRef(new Vector3());
   const projLabel = useRef(new Vector3());
+  // scratch vectors for sheath tip-mouth ring orientation (no per-frame alloc)
+  const _ringTangent = useRef(new Vector3());
+  const _ringQ = useRef(new Quaternion());
+  const _ringUp = useRef(new Vector3());
+  // scratch array for wire point clamping — reused each frame to avoid allocation
+  const _wireClampedPts = useRef<Vector3[]>([]);
   const procClock = useRef(0); // total run wall time (s)
   const fluoroClock = useRef(0); // beam-on (fluoroscopy) time (s)
   const doseAcc = useRef(0); // accumulated DAP-like dose
@@ -578,9 +605,71 @@ function Engine() {
       for (let i = 0; i < branchC.length; i++) branchC[i] = Math.max(ROADMAP_FILL, branchC[i]);
     }
 
-    // rebuild the instrument tubes from the live Cosserat node positions
-    rebuildTube(rig.sheath, outer.x, outer.rodRadius + 0.05);
-    rebuildTube(rig.wire, inner.x, 0.08);
+    // Instrument tube radii.
+    // Containment invariant: wireRenderR + 0.04 (coax clearance) < sheathRenderR · cos(π/radialSegments)
+    // = (outer.rodRadius+0.05) · cos(π/12). With wire=0.05, sheath≈0.15: 0.09 < 0.145 — satisfied.
+    const sheathRenderR = outer.rodRadius + 0.05;
+    const wireRenderR = inner.rodRadius; // 0.05 cm; matches physics radius, never inflated
+
+    // Sheath tube — rebuilt from live outer nodes.
+    rebuildTube(rig.sheath, outer.x, sheathRenderR);
+
+    // Wire tube — nodes covered by the sheath are snapped to the sheath centerline so the
+    // wire can never poke through the sheath wall regardless of physics transients.
+    // Blend over the last ~1 cm before the sheath tip so there is no kink at the exit.
+    const sheathDeployed = outer.deployedLength(); // arc length of deployed sheath (cm)
+    const blendZone = 1.0; // cm over which we lerp from sheath line to wire physics
+    // Build a Catmull-Rom over the outer nodes to sample the sheath spine at any arc fraction.
+    // Only build if we have valid outer nodes (the finite guard in rebuildTube already checked).
+    const outerValid = outer.x.length >= 2 && outer.x.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z));
+    const sheathCurve = outerValid ? new CatmullRomCurve3(outer.x.slice()) : null;
+
+    // Grow/shrink the scratch array to match inner.x without per-frame allocation
+    const clampedPts = _wireClampedPts.current;
+    while (clampedPts.length < inner.x.length) clampedPts.push(new Vector3());
+    clampedPts.length = inner.x.length;
+
+    for (let i = 0; i < inner.x.length; i++) {
+      const nodeArc = i * inner.h; // material arc length of this node (cm)
+      const src = inner.x[i];
+      if (!sheathCurve || nodeArc >= sheathDeployed + blendZone) {
+        // Beyond the sheath (+ blend tail) — use raw physics position.
+        clampedPts[i].copy(src);
+      } else if (nodeArc <= sheathDeployed - blendZone) {
+        // Fully covered — snap to the sheath spine at the matching fractional arc length.
+        const t = sheathDeployed > 0 ? Math.max(0, Math.min(1, nodeArc / sheathDeployed)) : 0;
+        sheathCurve.getPoint(t, clampedPts[i]);
+      } else {
+        // Blend zone: lerp from sheath spine toward physics position.
+        const t = sheathDeployed > 0 ? Math.max(0, Math.min(1, nodeArc / sheathDeployed)) : 0;
+        const spinePos = sheathCurve.getPoint(t, new Vector3());
+        const alpha = (nodeArc - (sheathDeployed - blendZone)) / blendZone; // 0→1 across blend zone
+        clampedPts[i].lerpVectors(spinePos, src, Math.max(0, Math.min(1, alpha)));
+      }
+    }
+    rebuildTube(rig.wire, clampedPts, wireRenderR);
+
+    // Sheath tip-mouth ring: thin dark torus at the sheath distal tip, oriented along the
+    // tip tangent (last two outer nodes give the tangent direction).
+    // Dispose previous geometry and rebuild at current radii — same discipline as the tubes.
+    if (outer.x.length >= 2) {
+      const tipPos = outer.x[outer.x.length - 1];
+      const penultPos = outer.x[outer.x.length - 2];
+      const tangent = _ringTangent.current.subVectors(tipPos, penultPos);
+      if (tangent.lengthSq() > 1e-8) {
+        tangent.normalize();
+        // Orient the torus (default normal = +Z) toward the tip tangent.
+        _ringQ.current.setFromUnitVectors(_ringUp.current.set(0, 0, 1), tangent);
+        rig.sheathRing.geometry.dispose();
+        // TorusGeometry(R, r_tube, radialSeg, tubularSeg):
+        //   R = sheath outer visual radius; r_tube = thin band ≈ (sheathRenderR - wireRenderR)/2
+        const ringR = sheathRenderR;
+        const ringTube = Math.max(0.005, (sheathRenderR - wireRenderR) * 0.5);
+        rig.sheathRing.geometry = new TorusGeometry(ringR, ringTube, 8, 24);
+        rig.sheathRing.position.copy(tipPos);
+        rig.sheathRing.quaternion.copy(_ringQ.current);
+      }
+    }
 
     // shared C-arm camera. The isocenter is offset by the table pan so the operator can examine a
     // specific region (e.g. the visceral takeoffs) at magnification.
@@ -602,8 +691,8 @@ function Engine() {
     // instruments always dense. (Bone sigma is set at build and never touched here.)
     for (const m of rig.meshes) {
       const ud = m.userData as MeshMaterials;
-      if (ud.kind === "wire") ud.fluoro.uniforms.uSigma.value = 7.0;
-      else if (ud.kind === "sheath") ud.fluoro.uniforms.uSigma.value = 4.5;
+      if (ud.kind === "wire") ud.fluoro.uniforms.uSigma.value = 10.0;
+      else if (ud.kind === "sheath") ud.fluoro.uniforms.uSigma.value = 1.2;
       else if (ud.kind === "vessel") {
         const c = ud.branchIndex != null ? branchC[ud.branchIndex] : 0;
         ud.fluoro.uniforms.uSigma.value = (0.05 + c * 2.6) * ud.atten;
@@ -632,6 +721,7 @@ function Engine() {
         // tone-map so only the contrast column and the moving instruments remain.
         rig.wire.visible = false;
         rig.sheath.visible = false;
+        rig.sheathRing.visible = false;
         for (const m of rig.meshes) {
           const ud = m.userData as MeshMaterials;
           if (ud.kind === "vessel") ud.fluoro.uniforms.uSigma.value = 0.05 * ud.atten;
@@ -643,6 +733,7 @@ function Engine() {
         // restore the live (contrast + instruments) state for the live pass
         rig.wire.visible = true;
         rig.sheath.visible = true;
+        rig.sheathRing.visible = true;
         for (const m of rig.meshes) {
           const ud = m.userData as MeshMaterials;
           if (ud.kind === "vessel") {

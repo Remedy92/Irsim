@@ -122,7 +122,21 @@ export function makeCoaxContact(
 export interface CoaxClosest {
   segment: number;
   u: number;
+  /**
+   * PERPENDICULAR (radial) offset to the chosen segment's infinite line — the containment-pairing
+   * coordinate. Drives bestSeg selection and engagement, exactly as the radial coax normal constraint
+   * needs (free axial sliding). This is NOT a divergence test: a node axially far past the segment can
+   * still read a tiny rho here (the phantom infinite-cylinder distance).
+   */
   rho: number;
+  /**
+   * TRUE clamped distance to the chosen segment (distance to the CLAMPED closest point, keeping axial
+   * overhang when u clamps to an endpoint). This is the HONEST containment metric — the divergence
+   * guard and diagnostics use it; it equals `rho` when u is interior and exceeds it when the node has
+   * axially escaped. Separated from `rho` so the (correct, baseline) radial pairing/engagement is
+   * untouched while escape detection becomes honest.
+   */
+  trueDist: number;
   /** axial distance of the inner node PAST the outer tip (>0 ⇒ exited; ≤0 ⇒ inside). */
   pastTip: number;
 }
@@ -139,8 +153,11 @@ export function closestOuterSegment(inner: Vector3, outer: NodeContactTarget, ou
   let bestSeg = -1;
   let bestU = 0;
   let bestPerp = Infinity;
+  let bestTrue = Infinity; // min TRUE clamped distance over the scan (honest containment metric)
   for (let k = 0; k < segs; k++) {
     const u = closestOnSeg(inner, ox[k], ox[k + 1], _xo);
+    const trueDist = inner.distanceTo(_xo);
+    if (trueDist < bestTrue) bestTrue = trueDist;
     // perpendicular distance to the outer centerline (the containment radius coordinate)
     _to.subVectors(ox[k + 1], ox[k]);
     const tl = _to.length();
@@ -167,6 +184,7 @@ export function closestOuterSegment(inner: Vector3, outer: NodeContactTarget, ou
   out.segment = bestSeg;
   out.u = bestU;
   out.rho = bestPerp;
+  out.trueDist = bestTrue;
   out.pastTip = bestSeg === tipSeg && bestU >= 0.999 ? Math.max(0, past) : -1;
   return true;
 }
@@ -216,7 +234,14 @@ export function solveCoaxialNormalContact(
   const b = outer.x[k + 1];
   const u = closestOnSeg(pIn, a, b, _xo);
   c.outerU = u;
-  // perpendicular offset r_⊥ = (I − t t^T)(p_in − x_o)
+  // perpendicular offset r_⊥ = (I − t t^T)(p_in − x_o). The CONTAINMENT FORCE is deliberately RADIAL
+  // (perpendicular to the outer tangent) so the inner slides freely along the outer — a true-distance
+  // (clamped) correction direction would inject an AXIAL tie near segment endpoints and stall the
+  // free telescoping slide the design doc requires (§6: "no axial distance constraint for sliding").
+  // The TRUE clamped distance is used instead by the PAIRING/GUARD layer (closestOuterAtArc →
+  // buildCoaxContacts): a node that has axially escaped its paired segment is declared diverged THERE
+  // and never reaches this solver, so by the time we project, the contained node's r_⊥ ≈ its true
+  // distance (u interior) and this radial correction is both correct and slide-preserving.
   _to.subVectors(b, a);
   const tl = _to.length();
   if (tl > 1e-9) _to.multiplyScalar(1 / tl);

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
 import {
   CoaxialAssembly,
+  COAX_DIVERGENCE_BREAK_CM,
+  COAX_WALL_ESCAPE_TOL_CM,
   CosseratRod,
   GUIDEWIRE,
   GUIDEWIRE_FLOPPY,
@@ -803,7 +805,17 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
     // kinematically over-advances 1:1 through the curved held sheath. The hard requirement is that
     // it exits the open portal cleanly and stays contained in the covered section.
     expect(asm.innerExitPastOuterTip()).toBeGreaterThan(2);
-    expect(asm.maxCoveredInnerRho()).toBeLessThanOrEqual(asm.innerClearance() + 0.02);
+    // maxCoveredInnerRho is now the TRUE clamped distance of covered nodes to the sheath (not the
+    // perpendicular offset to the segment's infinite line). This is the honest containment metric:
+    // it can no longer read ≈clearance while a node has axially escaped its paired segment. Covered
+    // material here is genuinely inside the channel and stays within the clearance budget. The budget
+    // is clearance + 0.03 (vs the old +0.02 against the perpendicular metric): near the OPEN PORTAL
+    // the lead-out node angles out of the sheath tip, so its CLAMPED distance to the tip segment picks
+    // up a small honest axial component (~0.026 cm over clearance here) that the old infinite-line
+    // perpendicular metric simply discarded. This is the metric becoming honest, not a containment
+    // regression — div=0 confirms nothing actually escaped.
+    expect(asm.maxCoveredInnerRho()).toBeLessThanOrEqual(asm.innerClearance() + 0.03);
+    expect(asm.divergedCoaxCount()).toBe(0); // nothing broke containment in the benign feed case
     expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
   }, 30000);
 
@@ -944,6 +956,172 @@ describe("CoaxialAssembly — app integration on real anatomy (Stage 6)", () => 
       expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
     },
     90_000
+  );
+
+  /**
+   * HONEST per-node wall penetration over ALL non-kinematic nodes, IGNORING the channel clip — the
+   * primitive the clip cannot re-blind. maxWallPenetration() skips clipped covered material (and a
+   * once-diverged node whose flag heals is re-clipped), so steady-state safety must be asserted on
+   * THIS metric, never on the reported one.
+   */
+  const honestMaxWallPen = (rod: CosseratRod): number => {
+    let m = 0;
+    for (let i = 1; i < rod.n - 1; i++) m = Math.max(m, rod.wallPenetrationAtNode(i));
+    return Math.max(0, m);
+  };
+
+  /** Drive the audit reproduction: hold the wire at 8, run the sheath 6.5 → 14 → 20 over it. */
+  const runSheathAdvanceEscape = (asm: CoaxialAssembly) => {
+    applyStoreInput(asm, 8, 0.35, 0, 6.5);
+    for (let i = 0; i < 120; i++) asm.step(1 / 60);
+    let maxHonestPen = 0;
+    let sawDivergence = false;
+    for (const sheath of [14, 20]) {
+      applyStoreInput(asm, 8, 0.35, 0, sheath);
+      for (let i = 0; i < 300; i++) {
+        asm.step(1 / 60);
+        maxHonestPen = Math.max(maxHonestPen, honestMaxWallPen(asm.inner));
+        if (asm.divergedCoaxCount() > 0) sawDivergence = true;
+      }
+    }
+    for (let i = 0; i < 200; i++) asm.step(1 / 60); // settle
+    return { maxHonestPen, sawDivergence };
+  };
+
+  // COAX CONTAINMENT HONESTY — advancing the sheath far past a held wire (the reproduction of the
+  // previously-blind geometric escape). What this gate asserts (all measured, all true): the guard
+  // FIRES, the honest diagnostic SEES the gross through-wall excursion the old clip hid, and the
+  // guard CAPS the dragging near the wall-escape trigger instead of the old unbounded ≈47 cm. What it
+  // does NOT claim: that the wire ends up fully inside the vessel — the settled state still hides a
+  // few cm of penetration just BELOW the trigger (re-clipped, invisible to maxWallPenetration); that
+  // residual is the documented-red it.fails gate below. The sheath's OWN navigation is a later
+  // (bilateral-coupling) work item: assertions are scoped to the WIRE.
+  it(
+    "keeps covered-wire containment HONEST and caps the escape as the sheath advances past the held wire",
+    () => {
+      const asm = buildAppAssembly("rcfa");
+      const { maxHonestPen, sawDivergence } = runSheathAdvanceEscape(asm);
+
+      // The wire command was held — it did not get telescoped along by the sheath.
+      expect(asm.inner.deployedLength()).toBeLessThan(12);
+      expect(asm.outer.deployedLength()).toBeGreaterThan(16);
+
+      // HONESTY OF THE TRANSIENT: this scenario IS the audit bug, so the guard MUST engage and the
+      // honest wall-penetration metric MUST surface the gross excursion the old clip hid. A run where
+      // the guard never fires and the honest peak stays ≈0 would mean the old lie is back — so we
+      // assert the OPPOSITE of the old silent-0. (Regression canary for "containment went blind".)
+      expect(sawDivergence).toBe(true);
+      expect(maxHonestPen).toBeGreaterThan(0.05);
+
+      // THE CAP (what the guard actually delivers today, measured): the previously UNBOUNDED ≈47 cm
+      // through-wall dragging now peaks ≈8 cm and the settled honest penetration hovers just below the
+      // COAX_WALL_ESCAPE_TOL trigger (measured ≈5.3 cm — out-of-sheath covered material pinned on the
+      // sheath's extended line, re-clipped below the trigger). Bounded ≈9× better than the bug, but
+      // NOT full containment — see the documented-red gate below for the remaining honest deficit.
+      expect(maxHonestPen).toBeLessThan(2 * COAX_WALL_ESCAPE_TOL_CM);
+      expect(honestMaxWallPen(asm.inner)).toBeLessThan(COAX_WALL_ESCAPE_TOL_CM + 1);
+
+      expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
+    },
+    60_000
+  );
+
+  // DOCUMENTED RED (`it.fails`, repo precedent: dynamic_recovery.test.ts) — the honest steady-state
+  // containment deficit after a sheath-advance escape. The guard caps the dragging near the
+  // COAX_WALL_ESCAPE_TOL trigger, but covered material that has left the sheath and sits BELOW the
+  // trigger is re-clipped: it keeps ≈5.3 cm of clip-hidden wall penetration in the settled state
+  // (maxWallPenetration reads 0.000 there — blind by design of the clip). This gate asserts the REAL
+  // requirement on the honest primitive; it is expected to FAIL until the bilateral-coupling work item
+  // (sheath follows wire) removes the escape at its source, or a spacing-aware escape metric lets the
+  // trigger drop. CI goes RED the day this starts passing — then promote it to a hard gate.
+  it.fails(
+    "DOCUMENTED RED: settled honest wall penetration after a sheath-advance escape is within the 0.05 cm budget",
+    () => {
+      const asm = buildAppAssembly("rcfa");
+      runSheathAdvanceEscape(asm);
+      expect(honestMaxWallPen(asm.inner)).toBeLessThanOrEqual(0.05);
+    },
+    60_000
+  );
+
+  // DOCUMENTED RED (`it.fails`) — the over-fed covered prolapse hides ≈4 cm of wall penetration BELOW
+  // the guard trigger. Deploying the standard wire to 24 cm over a held 6.5 cm sheath drives the
+  // covered base ≈4 cm through the vessel wall while it remains channel-clipped (the guard's
+  // COAX_WALL_ESCAPE_TOL = 6 cm deliberately does not fire there: releasing those nodes destabilizes
+  // the calibrated push/chirality trajectories, and the over-feed keeps pushing them out regardless).
+  // This encodes that known deferred harm as a RED gate on the honest primitive instead of a comment:
+  // it is expected to FAIL until bilateral coupling cures the prolapse-through-wall at its source.
+  it.fails(
+    "DOCUMENTED RED: over-fed covered wire (deploy 24 over held 6.5 sheath) stays inside the vessel",
+    () => {
+      const asm = buildAppAssembly("rcfa");
+      applyStoreInput(asm, 24, 0.3, 0, 6.5);
+      let maxHonest = 0;
+      let maxUncontained = 0;
+      for (let i = 0; i < 600; i++) {
+        asm.step(1 / 60);
+        maxHonest = Math.max(maxHonest, honestMaxWallPen(asm.inner));
+        maxUncontained = Math.max(maxUncontained, asm.maxUncontainedWallPenetration());
+      }
+      // Honest all-node penetration must stay within the navigation budget (measured: ≈4 cm — RED),
+      // and the report-only uncontained diagnostic must agree that no out-of-sheath covered material
+      // is through the wall.
+      expect(Math.max(maxHonest, maxUncontained)).toBeLessThanOrEqual(0.05);
+    },
+    90_000
+  );
+
+  // The divergence guard must actually FIRE on a sustained gross escape (a covered node both far from
+  // the sheath AND dragged through the vessel wall) and then RECOVER substantially. We sustain a hard
+  // outward displacement of covered mid-wire nodes for several frames — far outside the vessel — so the
+  // guard's actual-harm trigger (true distance > break AND wall penetration > tol) is unambiguously
+  // met; the guard flags them and restores vessel contact, and once we release the perturbation the
+  // wire relaxes back TOWARD the vessel. Measured truth (post both-trigger-retention fix): forced
+  // honest penetration ≈1.9 cm relaxes to a stable ≈0.7 cm residual (out-of-sheath covered material
+  // below the wall trigger) — substantial recovery, NOT yet full containment; the strict ≤0.05 honest
+  // steady state is the same residual class as the documented-red sheath-advance gate above.
+  it(
+    "the divergence guard fires on a sustained covered-wire escape and recovers substantially",
+    () => {
+      const asm = buildAppAssembly("rcfa");
+      applyStoreInput(asm, 8, 0.35, 0, 6.5);
+      for (let i = 0; i < 120; i++) asm.step(1 / 60);
+      applyStoreInput(asm, 8, 0.35, 0, 20);
+      for (let i = 0; i < 300; i++) asm.step(1 / 60);
+
+      // Sustain a large lateral shove of the covered mid-wire nodes (well outside the vessel) for a few
+      // frames so the escape is unambiguous and the guard's wall-penetration trigger is met.
+      const lo = 3;
+      const hi = Math.min(10, asm.inner.n - 1);
+      let firedDuringForce = false;
+      for (let f = 0; f < 8; f++) {
+        for (let i = lo; i < hi; i++) {
+          asm.inner.x[i].x += 8;
+          asm.inner.prev[i].x += 8;
+        }
+        asm.step(1 / 60);
+        if (asm.divergedCoaxCount() > 0) firedDuringForce = true;
+      }
+      // The guard engaged on the forced gross escape, and the honest metric saw the gap.
+      expect(firedDuringForce).toBe(true);
+      expect(asm.maxCoveredTrueDistance()).toBeGreaterThan(COAX_DIVERGENCE_BREAK_CM);
+      const forcedPen = honestMaxWallPen(asm.inner); // honest primitive — the clip cannot hide it
+      expect(forcedPen).toBeGreaterThan(1); // the forced escape really drove the wire through the wall
+
+      // Release the perturbation and settle: with vessel contact restored (the guard exempted the
+      // escaped nodes from the channel clip), the wire relaxes back toward the vessel. Assert the
+      // HONEST recovery (per-node penetration ignoring the clip — maxWallPenetration() would read 0
+      // here simply because healed/sub-trigger material is re-clipped, which proves nothing):
+      // substantial (well under the forced depth), bounded (≈0.7 cm measured residual), and the
+      // per-node divergence flags healed (each flagged node got back under both repair thresholds).
+      for (let i = 0; i < 500; i++) asm.step(1 / 60);
+      const settledHonest = honestMaxWallPen(asm.inner);
+      expect(settledHonest).toBeLessThan(forcedPen); // it recovered, not worsened
+      expect(settledHonest).toBeLessThanOrEqual(1.2); // bounded residual (measured ≈0.7)
+      expect(asm.divergedCoaxCount()).toBe(0); // flags healed (both triggers back under repair)
+      expect(allFinite(asm.inner) && allFinite(asm.outer)).toBe(true);
+    },
+    60_000
   );
 
   it("rebuilds the assembly at the left common femoral access and stays stable", () => {

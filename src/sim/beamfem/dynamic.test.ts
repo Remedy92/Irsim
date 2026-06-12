@@ -39,12 +39,14 @@ function straightRod(n: number, ell: number, mat: ElemMat, fixedPrefix: number, 
     mass = { m: new Float64Array(n).fill(manualMass), Jb: new Float64Array(n).fill(0.01 * manualMass), Jt: new Float64Array(n).fill(0.01 * manualMass) };
   } else {
     // Phase B: PHYSICAL lumped mass — steel ρ=7.9 g/cm³ × the production GJ-decoupled conditioning
-    // scale (cosserat.ts D_MASS_SCALE = 8e5), chosen so wire-shaft twist M/Δt² ≈ GJ/ℓ. For the
-    // wind-up canary's r=0.05, EI=12 (GJ≈9.24), ℓ=0.5 this reproduces the previously-validated twist
-    // conditioning (Jt within ~3% of the old synthetic value) — see mass.ts header.
+    // scales (cosserat.ts D_MASS_SCALE_TRANS on m/Jb, D_MASS_SCALE_TWIST on Jt; both SHIPPED at 8e5
+    // until the contact stack can hold a bending-true wire — see the D_MASS_SCALE_TRANS comment),
+    // chosen so wire-shaft twist M/Δt² ≈ GJ/ℓ. For the wind-up canary's r=0.05, EI=12 (GJ≈9.24),
+    // ℓ=0.5 this reproduces the previously-validated twist conditioning (Jt within ~3% of the old
+    // synthetic value) — see mass.ts header.
     const radii = new Float64Array(n - 1).fill(0.05);
     const rho = new Float64Array(n - 1).fill(densityFromGramsPerCm3(7.9));
-    mass = assembleMass(n, restLen, radii, rho, 8.0e5);
+    mass = assembleMass(n, restLen, radii, rho, 8.0e5, 8.0e5);
   }
   return { n, x, q, v, omega, restLen, elem, mass, fixedPrefix };
 }
