@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Quaternion, Vector3 } from "three";
 import type { Anatomy } from "./types";
-import { CosseratRod, SHEATH } from "./cosserat";
+import { CosseratRod, SHEATH_DIRECT } from "./cosserat";
 import {
   buildAccessFrame,
   defaultInsertionState,
@@ -208,7 +208,7 @@ describe("CosseratRod injection on the live rod", () => {
   });
 
   it("sheath injection keeps sheath shaft material instead of leaking guidewire shaft properties", () => {
-    const sheath = new CosseratRod(tube(5), "a", SHEATH);
+    const sheath = new CosseratRod(tube(5), "a", SHEATH_DIRECT);
     sheath.input = { deployed: 10, steer: 0, torque: 0 };
     run(sheath, 200);
     const shaftEI = eiOf(sheath, 0);

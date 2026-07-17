@@ -1,5 +1,8 @@
 # IRsim Roadmap
 
+> Current architecture and delivery status live in `docs/ARCHITECTURE.md`. This roadmap retains the
+> original phase history and should not be used to infer which local-DICOM modules are implemented.
+
 Derived from the multi-agent research + adversarial critique phase. Phases are gated:
 each one's exit criteria must hold before committing to the next.
 
@@ -57,6 +60,13 @@ sees it in both views, and gets a debrief — on generic anatomy, honestly frame
   sale or any move toward patient-specific use.
 
 ## Physics findings (Phase 0)
+
+> **Superseded (2026-07-17).** This section is the original Phase-0 PBD/XPBD-rod narrative and its
+> "follow-the-leader feed" recommendation. The shipped runtime is now the **dynamic co-rotational
+> beam FEM** (`src/sim/beamfem/`), wired into `CosseratRod` as the sole elastic lane after the Phase-H
+> deletion of the legacy XPBD rod solve. Trust `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+> `docs/physics-fidelity-refactor-progress.md` for current physics state; the text below is retained
+> as decision history only.
 
 We built and unit-tested an **orientation-based Cosserat rod** (`src/sim/cosserat.ts`,
 Kugelstadt & Schömer + Bender's reference, cross-checked). The constraint solver is

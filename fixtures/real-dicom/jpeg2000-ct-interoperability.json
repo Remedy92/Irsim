@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "pydicom-jpeg2000-lossless-ct-interoperability-v1",
+  "description": "Content-pinned, real-pixel single-frame CT objects for JPEG 2000 Lossless decoder interoperability. The compressed objects were written by DCMTK and GDCM rather than preserved as scanner-originated compressed series, so this is engineering interoperability evidence, not vendor-series or clinical validation.",
+  "source": {
+    "dataRepository": "https://github.com/pydicom/pydicom-data",
+    "dataCommit": "abc42b90985fb6cf385aa4af766d2c9c94a257a4",
+    "fixtureNotesRepository": "https://github.com/pydicom/pydicom",
+    "fixtureNotesCommit": "dd9f032d15ac5265e1903d1102d19ceb51182506",
+    "fixtureNotes": "The upstream notes describe 693_* as JPEG 2000 regression variants and explicit_VR-UN as a TCIA-origin image compressed with gdcmconv. Upstream also states that test images may have been downsized or de-identified. These objects must not be treated as clinical cases or proof of scanner-originated compression."
+  },
+  "license": {
+    "name": "MIT License",
+    "url": "https://github.com/pydicom/pydicom-data/blob/abc42b90985fb6cf385aa4af766d2c9c94a257a4/LICENSE",
+    "requiresExplicitAcceptanceBeforeDownload": true,
+    "scopeNote": "The pydicom-data repository publishes an MIT LICENSE. Preserve the downloaded license and upstream fixture notes with the local acceptance payload."
+  },
+  "downloads": [
+    {
+      "outputName": "UPSTREAM-LICENSE-pydicom-data.txt",
+      "url": "https://raw.githubusercontent.com/pydicom/pydicom-data/abc42b90985fb6cf385aa4af766d2c9c94a257a4/LICENSE",
+      "bytes": 1072,
+      "sha256": "65e66dd0d31e26b45cb3869f3c6ab5e5218d5632c22b3b00d96e2fe83a3c8458"
+    },
+    {
+      "outputName": "UPSTREAM-FIXTURE-NOTES.txt",
+      "url": "https://raw.githubusercontent.com/pydicom/pydicom/dd9f032d15ac5265e1903d1102d19ceb51182506/src/pydicom/data/test_files/README.txt",
+      "bytes": 15936,
+      "sha256": "6cf3dcd1401b59f464de29b5d22ac3a2079a113b03122a15825bea6bc98574e7"
+    },
+    {
+      "outputName": "693_J2KR.dcm",
+      "url": "https://raw.githubusercontent.com/pydicom/pydicom-data/abc42b90985fb6cf385aa4af766d2c9c94a257a4/data_store/data/693_J2KR.dcm",
+      "bytes": 107060,
+      "sha256": "c392d8bd1f952ed2d9387d5143d34c5a29ac9d74566688169731a50ac6a82aa2"
+    },
+    {
+      "outputName": "693_UNCR.dcm",
+      "url": "https://raw.githubusercontent.com/pydicom/pydicom-data/abc42b90985fb6cf385aa4af766d2c9c94a257a4/data_store/data/693_UNCR.dcm",
+      "bytes": 525986,
+      "sha256": "cc4cdd599231922ecf63de2ddacf03d51c4588805c9154c2eef1ff49c23b32be"
+    },
+    {
+      "outputName": "explicit_VR-UN.dcm",
+      "url": "https://raw.githubusercontent.com/pydicom/pydicom-data/abc42b90985fb6cf385aa4af766d2c9c94a257a4/data_store/data/explicit_VR-UN.dcm",
+      "bytes": 186402,
+      "sha256": "28c4a61022d7dbebec97e2f1bbdad0ed097bee2c62727c26a3f3720248c9c6e7"
+    }
+  ],
+  "cases": [
+    {
+      "id": "dcmtk-693-j2kr",
+      "compressedFile": "693_J2KR.dcm",
+      "referenceFile": "693_UNCR.dcm",
+      "transferSyntax": "1.2.840.10008.1.2.4.90",
+      "implementationVersionName": "OFFIS_DCMTK_362",
+      "encapsulation": {
+        "fragmentCount": 1,
+        "basicOffsetTableEntries": 1,
+        "basicOffsetTableOffsets": [0],
+        "encodedFrameBytes": 105362,
+        "encodedFrameSha256": "9c49a09e22ac0f028285083ef950cd9f4dd46fc45beac4ea73cc4a6472924f4d",
+        "fragmentLengths": [105362],
+        "fragmentSha256": ["9c49a09e22ac0f028285083ef950cd9f4dd46fc45beac4ea73cc4a6472924f4d"],
+        "derivedEmptyBotFragmentVariant": true
+      },
+      "expected": {
+        "dimensions": [512, 512],
+        "pixelSpacingMm": [0.478516, 0.478516],
+        "imagePositionLps": [-122.5, -112.4, 47],
+        "rowDirectionLps": [1, 0, 0],
+        "columnDirectionLps": [0, 1, 0],
+        "sourceGeometryDs": {
+          "pixelSpacing": "0.478516\\0.478516",
+          "imagePositionPatient": "-122.500\\-112.400\\47.000",
+          "imageOrientationPatient": "1.000000\\0.000000\\0.000000\\0.000000\\1.000000\\0.000000"
+        },
+        "photometricInterpretation": "MONOCHROME2",
+        "declaredBitsStored": 16,
+        "codestreamBitsStored": 14,
+        "codestreamSigned": true,
+        "storedLittleEndianSha256": "6b3b6bb553a0b5692ee63737f4cb8d6bcfa960e7ae37e5d1bd9521b671b501b0",
+        "huLittleEndianSha256": "dd1c8d7baacc948269747a5787c94c8253c00a53fd52e9743edb4c1992c6bf3e",
+        "huMinimum": -3024,
+        "huMaximum": 1468,
+        "huSum": -271466631
+      },
+      "oracle": "Every decoded HU value must equal the independently maintained uncompressed 693_UNCR reference. pydicom's own pixel reference also requires array equality for this pair."
+    },
+    {
+      "id": "gdcm-explicit-vr-un",
+      "compressedFile": "explicit_VR-UN.dcm",
+      "referenceFile": null,
+      "transferSyntax": "1.2.840.10008.1.2.4.90",
+      "implementationVersionName": "GDCM 3.0.4",
+      "encapsulation": {
+        "fragmentCount": 1,
+        "basicOffsetTableEntries": 0,
+        "basicOffsetTableOffsets": [],
+        "encodedFrameBytes": 184960,
+        "encodedFrameSha256": "71c6e57856046b0f6df0b4766429170a8c16eae2fe972b09a7ebcb71bb980345",
+        "fragmentLengths": [184960],
+        "fragmentSha256": ["71c6e57856046b0f6df0b4766429170a8c16eae2fe972b09a7ebcb71bb980345"],
+        "derivedEmptyBotFragmentVariant": false
+      },
+      "expected": {
+        "dimensions": [512, 512],
+        "pixelSpacingMm": [0.859375, 0.859375],
+        "imagePositionLps": [0, 0, -121],
+        "rowDirectionLps": [1, 0, 0],
+        "columnDirectionLps": [0, -1, 0],
+        "sourceGeometryDs": {
+          "pixelSpacing": "0.859375\\0.859375",
+          "imagePositionPatient": "0\\0\\-121",
+          "imageOrientationPatient": "1\\0\\0\\0\\-1\\0"
+        },
+        "photometricInterpretation": "MONOCHROME2",
+        "declaredBitsStored": 16,
+        "codestreamBitsStored": 16,
+        "codestreamSigned": true,
+        "storedLittleEndianSha256": "a729f6fe1e75762988fd4a8749a18b580bbb16fb5365abf5a21dfecb0244b517",
+        "huLittleEndianSha256": "a729f6fe1e75762988fd4a8749a18b580bbb16fb5365abf5a21dfecb0244b517",
+        "huMinimum": -1024,
+        "huMaximum": 1186,
+        "huSum": -175887460
+      },
+      "oracle": "The HU hash and extrema were independently generated with pydicom 3.0.1 plus Pillow 12.2.0 JPEG 2000 support before being pinned here."
+    }
+  ]
+}

@@ -214,6 +214,90 @@ export function validateAnatomyDoc(doc: AnatomyDoc): AnatomyDoc {
   return doc;
 }
 
+/**
+ * Strict gate for a document that is about to replace the live simulator anatomy. The historical
+ * validator above remains intentionally permissive for variant authoring; this gate also enforces
+ * bounded resources, finite geometry, and the access/target invariants the runtime dereferences.
+ */
+export function validateSimulatorReadyAnatomyDoc(doc: AnatomyDoc): AnatomyDoc {
+  validateAnatomyDoc(doc);
+  if (!doc.id?.trim() || !doc.name?.trim()) throw new Error("anatomy doc: id and name are required");
+  if (doc.branches.length > 512) throw new Error("anatomy doc: branch count exceeds the 512-branch limit");
+  if (!Array.isArray(doc.access) || doc.access.length === 0) {
+    throw new Error("anatomy doc: simulator-ready anatomy needs at least one access site");
+  }
+  if (!Array.isArray(doc.targets) || doc.targets.length === 0) {
+    throw new Error("anatomy doc: simulator-ready anatomy needs at least one target");
+  }
+
+  let totalControls = 0;
+  for (const branch of doc.branches) {
+    if (!branch.name?.trim()) throw new Error(`anatomy doc: branch "${branch.id}" needs a name`);
+    if (!Number.isFinite(branch.attenuation) || branch.attenuation < 0 || branch.attenuation > 20) {
+      throw new Error(`anatomy doc: branch "${branch.id}" has invalid attenuation`);
+    }
+    if (!Array.isArray(branch.controls) || branch.controls.length < (branch.parent ? 1 : 2)) {
+      throw new Error(`anatomy doc: branch "${branch.id}" has too few controls`);
+    }
+    if (branch.controls.length > 256) {
+      throw new Error(`anatomy doc: branch "${branch.id}" exceeds the 256-control limit`);
+    }
+    if (branch.samples !== undefined && (!Number.isInteger(branch.samples) || branch.samples < 2 || branch.samples > 512)) {
+      throw new Error(`anatomy doc: branch "${branch.id}" has invalid samples`);
+    }
+    totalControls += branch.controls.length;
+    for (const control of branch.controls) validateControl(control, branch.id);
+    if (branch.ostiumNear) validatePosition(branch.ostiumNear, `branch "${branch.id}" ostium`);
+    if (branch.ostiumR !== undefined && (!Number.isFinite(branch.ostiumR) || branch.ostiumR <= 0 || branch.ostiumR > 10)) {
+      throw new Error(`anatomy doc: branch "${branch.id}" has invalid ostium radius`);
+    }
+  }
+  if (totalControls > 20_000) throw new Error("anatomy doc: total control count exceeds the safety limit");
+
+  const accessIds = new Set<string>();
+  for (const access of doc.access) {
+    if (!access.id?.trim() || accessIds.has(access.id)) {
+      throw new Error(`anatomy doc: invalid or duplicate access id "${access.id}"`);
+    }
+    accessIds.add(access.id);
+    validatePosition(access.dir, `access "${access.id}" direction`, 10);
+    if (Math.hypot(...access.dir) < 1e-6) throw new Error(`anatomy doc: access "${access.id}" direction is zero`);
+  }
+
+  const targetIds = new Set<string>();
+  for (const target of doc.targets) {
+    if (!target.id?.trim() || targetIds.has(target.id)) {
+      throw new Error(`anatomy doc: invalid or duplicate target id "${target.id}"`);
+    }
+    targetIds.add(target.id);
+    if (!Number.isFinite(target.acceptance) || target.acceptance <= 0 || target.acceptance > 50) {
+      throw new Error(`anatomy doc: target "${target.id}" has invalid acceptance radius`);
+    }
+    if (target.pos) validatePosition(target.pos, `target "${target.id}" position`);
+  }
+  return doc;
+}
+
+function validateControl(control: CtrlSpec, branchId: string): void {
+  if (!control || !Array.isArray(control.p) || control.p.length !== 3) {
+    throw new Error(`anatomy doc: branch "${branchId}" has an invalid control point`);
+  }
+  validatePosition(control.p, `branch "${branchId}" control`);
+  if (!Number.isFinite(control.r) || control.r <= 0 || control.r > 10) {
+    throw new Error(`anatomy doc: branch "${branchId}" has an invalid control radius`);
+  }
+}
+
+function validatePosition(position: [number, number, number], label: string, maxMagnitude = 1000): void {
+  if (
+    !Array.isArray(position) ||
+    position.length !== 3 ||
+    position.some((value) => !Number.isFinite(value) || Math.abs(value) > maxMagnitude)
+  ) {
+    throw new Error(`anatomy doc: ${label} is non-finite or outside the supported coordinate range`);
+  }
+}
+
 /** Deep-copy a document (plain JSON data — no Vector3/functions). */
 export function cloneDoc(doc: AnatomyDoc): AnatomyDoc {
   return JSON.parse(JSON.stringify(doc)) as AnatomyDoc;

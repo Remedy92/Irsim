@@ -19,29 +19,32 @@ function slerpShortest(a: Quaternion, b: Quaternion, t: number, out: Quaternion)
 }
 
 /**
- * Adapter between the existing Cosserat rod's per-segment MaterialField (compliances) and the dynamic
- * co-rotational beam's per-element ElemMat (rigidities) + lumped mass + nodal frames
+ * Adapter between the existing Cosserat rod's per-segment MaterialField and the dynamic co-rotational
+ * beam's per-element ElemMat (rigidities) + lumped mass + nodal frames
  * (docs/physics-design-dynamic-corotational-beam.md §1.1, §3a).
  *
- * The MaterialField stores XPBD COMPLIANCES (α_bend = ℓ/(4·EI), α_stretch = ℓ/EA, α_twist = ℓ/(4·GJ));
- * the beam needs the RIGIDITIES, recovered by inverting those exact mappings (units.ts):
- *   EI = ℓ/(4·α_bend),  GJ = ℓ/(4·α_twist),  EA = ℓ/α_stretch.
- * This round-trips the REGION-table targets exactly (shaft EI≈12, tip≈0.1, …), so the calibrated
- * cantilever/buckling gates assert the SAME constants the solver assembles from.
+ * MATERIAL OWNERSHIP (Phase H2 flip): the MaterialProfile now stores the RIGIDITIES NATIVELY
+ * (EA/EIy/EIz/GJ); the beam reads them DIRECTLY with no compliance↔rigidity round-trip. Previously
+ * this adapter recovered them by inverting the XPBD α-* compliances:
+ *   EA = ℓ/α_stretch,  EIy = ℓ/(4·α_bend1),  EIz = ℓ/(4·α_bend2),  GJ = ℓ/(4·α_twist).
+ * Those mappings were lossless by construction, so reading the native fields is byte-identical:
+ * it still round-trips the REGION-table targets exactly (shaft EI≈12, tip≈0.1, …), so the calibrated
+ * cantilever/buckling gates assert the SAME constants the solver assembles from. `ell` is no longer
+ * needed for the rigidities (they are intrinsic per-element values, not compliances).
  *
  * REPRESENTATION BRIDGE: the rod carries one quaternion PER SEGMENT (n−1 frames); the beam carries
  * one PER NODE (n frames). The beam owns nodal frames as authoritative; positions x[] are shared with
  * the rod. Helpers convert both ways so contact/coax/rendering that read segment frames stay coherent.
  */
 
-/** Recover element rigidities (EA/EIy/EIz/GJ) + precurve from a segment's XPBD compliances. */
-export function elemMatFromProfile(m: MaterialProfile, ell: number, steer = 0, kirchhoff = true): ElemMat {
+/** Read element rigidities (EA/EIy/EIz/GJ) NATIVELY from the profile + decode precurve. */
+export function elemMatFromProfile(m: MaterialProfile, _ell: number, steer = 0, kirchhoff = true): ElemMat {
   const s = Math.max(0, Math.min(1, steer));
   return {
-    EA: ell / Math.max(1e-12, m.alphaStretch),
-    EIy: ell / (4 * Math.max(1e-12, m.alphaBend1)),
-    EIz: ell / (4 * Math.max(1e-12, m.alphaBend2)),
-    GJ: ell / (4 * Math.max(1e-12, m.alphaTwist)),
+    EA: m.EA,
+    EIy: m.EIy,
+    EIz: m.EIz,
+    GJ: m.GJ,
     GAsy: 0,
     GAsz: 0,
     kirchhoff,

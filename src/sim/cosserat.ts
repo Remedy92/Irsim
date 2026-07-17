@@ -8,7 +8,6 @@ import {
   type MaterialField,
   type MaterialProfile
 } from "./material";
-import { solveXPBDScalar } from "./xpbd";
 import {
   buildAccessFrame,
   defaultInsertionState,
@@ -127,7 +126,7 @@ import type { Contact, LumenQuery } from "./types";
  *     (the cheap alternative to true swept collision; the design doc allows either, §7).
  *
  * Public surface (kept for back-compat with the live tests and app):
- *   CosseratRod, GUIDEWIRE, CosseratParams, RodInput; x, q, n, input; step, tip,
+ *   CosseratRod, GUIDEWIRE_DIRECT, CosseratParams, RodInput; x, q, n, input; step, tip,
  *   deployedLength, tipRoll.  `n` is now mutable (the rod grows/shrinks with feed).
  *   Also implements NodeContactTarget (x, prev, q, w, wq, rodRadius) for contact.ts.
  */
@@ -190,52 +189,56 @@ export interface CosseratParams {
    */
   coaxLumenRadius: number;
   /**
-   * PHASE 3 (docs/physics-design-dynamic-corotational-beam.md): when true, this rod's per-frame
-   * elastic + bend solve is the DYNAMIC CO-ROTATIONAL BEAM (real EI, substep-invariant, dynamic
-   * twist/whip) instead of the legacy XPBD Gauss-Seidel sweep + curvature-fairing. Per-rod so wire
-   * and sheath can flip independently.
-   */
-  useDirectSolve?: boolean;
-  /**
-   * Experimental direct-only feed boundary: node 0 is a real beam DOF driven by the compliant,
-   * force-capped inlet motor from insertion.ts. Default false until the curved-anatomy direct gates
-   * pass; the current direct preset keeps the old hard-inlet adapter.
+   * Direct-only feed boundary: node 0 is a real beam DOF driven by the compliant, force-capped inlet
+   * motor from insertion.ts. When false (e.g. the sheath preset) the direct beam keeps the hard-inlet
+   * kinematic adapter (anchorInletDirect). The shipped guidewire enables it.
    */
   useCompliantFeedMotor?: boolean;
 }
 
-export const GUIDEWIRE: CosseratParams = {
-  segments: 80,
+/**
+ * The shipped guidewire: the dynamic co-rotational beam (beamfem) at a coarse discretization
+ * (h = 0.5 cm, ~40 elements). The beam owns real EI / substep-invariance / dynamic twist; the
+ * per-frame solve is always the direct path (the legacy XPBD lane was deleted in Phase H).
+ *
+ * Numbers preserved verbatim from the pre-Phase-H GUIDEWIRE_DIRECT (= {...GUIDEWIRE} at h=0.25
+ * rebased to h=0.5): tipNodes/transitionNodes halved to keep the SAME physical tip/transition
+ * lengths, tipCurve doubled to keep the same rest CURVATURE (rad/cm). dampingTau = 0.08 and
+ * substeps = 2 are retained from the original preset (substeps no longer gates the elastic
+ * response — D_SUBSTEPS drives the fixed internal direct substep count — but is left so existing
+ * call sites/diagnostics read the same value).
+ */
+export const GUIDEWIRE_DIRECT: CosseratParams = {
+  segments: 40, // h = 20/40 = 0.5 cm
   rodRadius: 0.05,
   referenceLength: 20,
-  // ITERATIONS, not substeps, propagate and express bending along this Gauss-Seidel Cosserat
-  // chain (an empirical finding: dropping to a few iterations kills precurve expression and
-  // shape-holding because GS carries bend information only ~one node per iteration — Deul et al.
-  // 2018). So we keep a healthy iteration count for bend propagation; the substep count is for
-  // dynamics/contact, not stiffness. Time-constant damping (dampingTau) decouples the felt damping
-  // from the substep count so the two knobs no longer fight.
   substeps: 2,
   iterations: 12,
-  damping: 0.9, // legacy fallback (unused while dampingTau > 0)
-  dampingTau: 0.08, // per-frame damping ≈ the old S=2 value (0.9²≈0.81/frame), now S-independent
-  tipNodes: 6,
-  transitionNodes: 12,
-  tipCurve: 0.22,
+  damping: 0.9,
+  dampingTau: 0.08,
+  tipNodes: 3, // 3·0.5 = 1.5 cm (= 6·0.25)
+  transitionNodes: 6, // 6·0.5 = 3 cm (= 12·0.25)
+  tipCurve: 0.44, // doubled ⇒ same rest curvature (rad/cm) as the original h=0.25 preset
   profile: "guidewire",
   bendComplianceScale: 1,
   spinFrictionScale: 1,
-  coaxLumenRadius: 0.05
+  coaxLumenRadius: 0.05,
+  useCompliantFeedMotor: true
 };
 
-/** A stiffer, larger-radius coaxial device (catheter / sheath). */
-export const SHEATH: CosseratParams = {
-  segments: 80,
+/**
+ * The shipped sheath/catheter: the direct beam at the matching coarse discretization. A stiffer,
+ * larger-radius coaxial device. Keeps the hard-inlet kinematic adapter (no compliant feed motor).
+ * Numbers preserved verbatim from the pre-Phase-H SHEATH_DIRECT (= {...SHEATH} at segments=40).
+ */
+export const SHEATH_DIRECT: CosseratParams = {
+  segments: 40,
   rodRadius: 0.1,
   referenceLength: 20,
   substeps: 4,
   iterations: 12,
   damping: 0.9,
-  dampingTau: 0.04, // S=4 ⇒ ≈0.9/substep, matching the original per-frame sheath damping (0.9⁴)
+  dampingTau: 0.04,
   tipNodes: 0,
   transitionNodes: 0,
   tipCurve: 0,
@@ -256,7 +259,6 @@ export interface RodInput {
 
 const _v = new Vector3();
 const _bodyZ = new Vector3(0, 0, 1);
-const _restAxis = new Vector3();
 const _advTan = new Vector3();
 const _advBaseTan = new Vector3();
 const _sample = new Vector3();
@@ -266,6 +268,16 @@ const _selfQ = new Vector3();
 const _selfN = new Vector3();
 const _segAb = new Vector3();
 const _segAp = new Vector3();
+/** Hysteresis for distinguishing residual inlet-motor drift from an intentional traversal command. */
+const BRANCH_OWNER_SETTLE_ENTER_SPEED_CM_S = 0.05;
+const BRANCH_OWNER_SETTLE_EXIT_SPEED_CM_S = 0.5;
+// Temporary shipped-normal-anatomy window: the rcfa first aortoiliac passage completes in the
+// 8→19.2 cm browser feed scenario. Deeper navigation stays on the calibrated solver path until the
+// patient-specific topology solver can replace this anatomy-specific guard.
+const AORTOILIAC_FIRST_PASS_MAX_DEPLOYED_CM = 20;
+const BRANCH_TRANSITION_SETTLED_TRIGGER_CM = 0.145;
+const BRANCH_TRANSITION_SETTLED_STRETCH_CM = 0.1;
+/** Junction-frame rollback budget, leaving margin below the 0.15 cm release gate. */
 
 /**
  * A self-collision pair between two non-adjacent segment midpoints. The minimum-distance pair
@@ -276,24 +288,6 @@ interface SelfContact {
   segA: number;
   segB: number;
   lambdaN: number;
-}
-
-function director(q: Quaternion, out: Vector3): Vector3 {
-  return out.set(
-    2 * (q.x * q.z + q.w * q.y),
-    2 * (q.y * q.z - q.w * q.x),
-    q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z
-  );
-}
-
-/** Hamilton product a*b into out (x,y,z,w order). */
-function qmul(a: Quaternion, b: Quaternion, out: Quaternion): Quaternion {
-  return out.set(
-    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-  );
 }
 
 /** Closest point of segment [a,b] to p, into `out`; returns the clamped parameter t ∈ [0,1]. */
@@ -384,7 +378,9 @@ export class CosseratRod implements Injectable, NodeContactTarget {
 
   invMassAt(node: number): number {
     if (node < 0 || node >= this.n || this.w[node] <= 0) return 0;
-    if (this.params.useDirectSolve && this.directReady && this.dMass && this.dMass.m.length === this.n) {
+    // Direct beam mass once the dynamic state is built; before that, fall back to the unit kinematic
+    // flag w[] (the boundary node is 0, free nodes 1) so contact accessors are sane during seeding.
+    if (this.directReady && this.dMass && this.dMass.m.length === this.n) {
       const m = this.dMass.m[node];
       return m > 1e-18 && Number.isFinite(m) ? this.dContactMassScale / m : 0;
     }
@@ -393,7 +389,8 @@ export class CosseratRod implements Injectable, NodeContactTarget {
 
   invInertiaAt(node: number): number {
     if (node < 0 || node >= this.n) return 0;
-    if (this.params.useDirectSolve && this.directReady && this.dMass && this.dMass.Jt.length === this.n) {
+    // Direct beam rotational inertia once built; before that, fall back to the unit kinematic flag.
+    if (this.directReady && this.dMass && this.dMass.Jt.length === this.n) {
       if (this.w[node] <= 0) return 0;
       const jt = this.dMass.Jt[node];
       return jt > 1e-18 && Number.isFinite(jt) ? this.dContactInertiaScale / jt : 0;
@@ -418,15 +415,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   /** Access frame + insertion-boundary state (replaces the old pinned base). */
   readonly access: AccessFrame;
   readonly insertion: InsertionState;
-
-  /** XPBD multipliers, reset each substep. Sized lazily to the current segment count.
-   * Stretch-shear is a 3-vector constraint → three SIGNED per-axis multipliers (x,y,z). */
-  private lambdaStretchX: number[];
-  private lambdaStretchY: number[];
-  private lambdaStretchZ: number[];
-  private lambdaBend1: number[];
-  private lambdaBend2: number[];
-  private lambdaTwist: number[];
 
   /** Variable-radius capsule-chain implicit lumen (Stage 4) — graph-aware nearest-edge query. */
   private readonly lumen: Lumen;
@@ -473,8 +461,21 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   private selfPool: SelfContact[] = [];
   /** Uniform spatial hash buckets for self-collision broad phase (rebuilt each substep). */
   private selfHash = new Map<number, number[]>();
+  /** Reusable frame snapshots for rejecting an impossible one-frame branch-owner reversal. */
+  private branchGuardPositionBefore: Vector3[] = [];
+  private branchGuardPrevBefore: Vector3[] = [];
+  private branchGuardOwnerBefore: number[] = [];
+  private branchGuardVelocityBefore: Vector3[] = [];
+  private branchGuardOmegaBefore: Vector3[] = [];
+  private branchGuardNodeQBefore: Quaternion[] = [];
 
   input: RodInput = { deployed: 8, steer: 0.45, torque: 0 };
+  /** Hysteretic state: true during residual motor drift, false during intentional traversal. */
+  private branchOwnerSettled = true;
+  /** Settled stabilization is only valid after forward traversal, never after pullback. */
+  private branchOwnerSettledAfterForward = true;
+  /** A moving coupled outer device also makes branch-owner changes legitimate transit. */
+  private branchOwnerCoupledTraversal = false;
 
   /**
    * When this rod is the INNER member of a coaxial pair, proximal material up to this arc length is
@@ -519,7 +520,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   /** True iff any extForce/extMoment is nonzero (keeps the zero-load fast path overhead-free). */
   private hasExtLoad = false;
 
-  // ----- Phase-3 dynamic co-rotational beam state (only allocated when params.useDirectSolve) -----
+  // ----- Dynamic co-rotational beam state (lazily allocated by ensureDirect on the first substep) -----
   /** Dynamic-beam NODAL frames (n; the beam owns these — the rod's per-segment q[] is derived). */
   private dNodeQ: Quaternion[] = [];
   /** Per-node linear + angular velocity (cm/s, rad/s) carried across substeps/frames. */
@@ -646,9 +647,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    */
   private static D_SUBSTEPS = 4;
 
-  /** cm/s rate cap on the legacy-deployed feed adapter (no startup shock). */
-  private static FEED_RATE = 35;
-  /** Lower cm/s cap for the dynamic beam: avoids injecting a stiff column faster than contact can contain. */
+  /** cm/s rate cap for the dynamic beam feed: avoids injecting a stiff column faster than contact can contain. */
   private static D_FEED_RATE = 4;
 
   /**
@@ -692,12 +691,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    */
   private static SELF_SKIP = 3;
 
-  // scratch quaternions
-  private tmpA = new Quaternion();
-  private tmpB = new Quaternion();
-  private tmpC = new Quaternion();
-
-  constructor(anatomy: Anatomy, accessId: string, params: CosseratParams = GUIDEWIRE, initialInput?: Partial<RodInput>) {
+  constructor(anatomy: Anatomy, accessId: string, params: CosseratParams = GUIDEWIRE_DIRECT, initialInput?: Partial<RodInput>) {
     this.params = params;
     this.h = params.referenceLength / params.segments;
     if (initialInput) this.input = { ...this.input, ...initialInput };
@@ -705,12 +699,11 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     const site = anatomy.access.find((a) => a.id === accessId) ?? anatomy.access[0];
     this.access = buildAccessFrame(site);
     this.insertion = defaultInsertionState(this.h);
-    // Direct-lane compliant feed motor: author forceMax in PHYSICAL Newtons by calibrating the
-    // N→scaled-λ-force conversion (the legacy default forceScale=1 keeps the hard-anchor lane untouched).
-    if (params.useDirectSolve === true) {
-      this.insertion.forceScale = CosseratRod.D_FEED_FORCE_SCALE;
-      if (params.useCompliantFeedMotor === true) this.insertion.forceMax = CosseratRod.D_DEFAULT_FEED_FORCE_MAX;
-    }
+    // Compliant feed motor: author forceMax in PHYSICAL Newtons by calibrating the N→scaled-λ-force
+    // conversion. The force scale arms the motor; the force cap only applies when the compliant feed
+    // motor is enabled (the sheath preset keeps the hard-inlet kinematic adapter).
+    this.insertion.forceScale = CosseratRod.D_FEED_FORCE_SCALE;
+    if (params.useCompliantFeedMotor === true) this.insertion.forceMax = CosseratRod.D_DEFAULT_FEED_FORCE_MAX;
 
     // Stage 4: variable-radius capsule-chain implicit lumen with graph adjacency + a spatial
     // grid (lumen.ts). Replaces the old inline nearest-single-segment capsule list.
@@ -761,14 +754,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
           });
     this.applyComplianceScale(this.material.perSegment);
     this.shaftPrototype = this.scaledProfile(shaftProfile(this.h, params.profile));
-
-    this.lambdaStretchX = [];
-    this.lambdaStretchY = [];
-    this.lambdaStretchZ = [];
-    this.lambdaBend1 = [];
-    this.lambdaBend2 = [];
-    this.lambdaTwist = [];
-    this.resizeLambdas();
 
     // per-node hysteresis state (current vessel edge), unknown until the first query
     this.currentEdge = new Array(this.n).fill(-1);
@@ -822,7 +807,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       this.dOmega.unshift(new Vector3());
     }
     this.n = this.x.length;
-    this.resizeLambdas();
   }
 
   /**
@@ -879,7 +863,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       this.dOmega.unshift(new Vector3());
     }
     this.n = this.x.length;
-    this.resizeLambdas();
   }
 
   /** Remove the proximal-most node + its segment + material (no-op below minNodes). */
@@ -910,7 +893,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       this.zeroDirectVelocities();
     }
     this.n = this.x.length;
-    this.resizeLambdas();
   }
 
   /** Direct-beam removal paired with prependNodeNoAdvect: material has already moved by the motor. */
@@ -937,7 +919,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
       this.zeroDirectVelocities();
     }
     this.n = this.x.length;
-    this.resizeLambdas();
   }
 
   /**
@@ -967,24 +948,19 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     for (const w of this.dOmega) w.set(0, 0, 0);
   }
 
-  private resizeLambdas(): void {
-    const segs = this.q.length;
-    const fit = (arr: number[], len: number) => {
-      arr.length = Math.max(0, len);
-      arr.fill(0);
-    };
-    fit(this.lambdaStretchX, segs);
-    fit(this.lambdaStretchY, segs);
-    fit(this.lambdaStretchZ, segs);
-    fit(this.lambdaBend1, Math.max(0, segs - 1));
-    fit(this.lambdaBend2, Math.max(0, segs - 1));
-    fit(this.lambdaTwist, Math.max(0, segs - 1));
-  }
-
+  // bendComplianceScale scales the NATIVE rigidities (Phase H2 material-ownership flip). The legacy
+  // form multiplied α_bend by s; since EI = ℓ/(4·α_bend) the realised EI was EI_nominal / s. Natively
+  // we therefore DIVIDE EIy/EIz/GJ by s (EI_eff = EI_nominal / bendComplianceScale): a floppier wire
+  // (s>1) softens, a stiffer wire (s<1) stiffens — the SAME realised EI as before (device-stiffness
+  // gate: s∈{1,0.5,2} ⇒ shaft EI∈{12,24,6}). The derived α-* fields are kept in sync (×s) so the
+  // back-compat compliance representation stays consistent; nothing live reads them.
   private applyComplianceScale(profiles: MaterialProfile[]): void {
     const s = this.params.bendComplianceScale;
     if (s === 1) return;
     for (const m of profiles) {
+      m.EIy /= s;
+      m.EIz /= s;
+      m.GJ /= s;
       m.alphaBend1 *= s;
       m.alphaBend2 *= s;
       m.alphaTwist *= s;
@@ -994,123 +970,14 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   private scaledProfile(p: MaterialProfile): MaterialProfile {
     const s = this.params.bendComplianceScale;
     if (s !== 1) {
+      p.EIy /= s;
+      p.EIz /= s;
+      p.GJ /= s;
       p.alphaBend1 *= s;
       p.alphaBend2 *= s;
       p.alphaTwist *= s;
     }
     return p;
-  }
-
-  // ----- elastic constraints (XPBD compliance) -----
-
-  /**
-   * XPBD stretch-shear for segment j. C_s = (1/ℓ)(p_b - p_a) - d3(q_j). As α_stretch → 0
-   * this reduces to the rigid PBD projection (inextensibility test relies on this). The
-   * Cosserat shear coupling also rotates the segment frame to follow the position.
-   */
-  private solveStretchShear(j: number, dtSeconds: number): void {
-    const a = j;
-    const b = j + 1;
-    const qj = this.q[j];
-    const l0 = this.restLen[j];
-    const d3 = director(qj, _v);
-    const cx = (this.x[b].x - this.x[a].x) / l0 - d3.x;
-    const cy = (this.x[b].y - this.x[a].y) / l0 - d3.y;
-    const cz = (this.x[b].z - this.x[a].z) / l0 - d3.z;
-
-    const denomGeom = (this.w[a] + this.w[b]) / l0 + 4 * l0 * this.wq[j] + 1e-6;
-    const alpha = this.material.perSegment[j].alphaStretch;
-    const aTilde = alpha / (dtSeconds * dtSeconds);
-    const denom = denomGeom + aTilde;
-    // SIGNED per-axis XPBD: Δλ = -(C + α̃·λ)/denom, λ += Δλ. (The previous code accumulated
-    // Math.hypot — always positive — so λ ran away and the α̃·λ regularization injected an
-    // ever-growing phantom force that diverged at high α̃ i.e. ≥4 substeps. Signed
-    // accumulation is the correct XPBD form and is stable for any substep count.)
-    const gx = -(cx + aTilde * this.lambdaStretchX[j]) / denom;
-    const gy = -(cy + aTilde * this.lambdaStretchY[j]) / denom;
-    const gz = -(cz + aTilde * this.lambdaStretchZ[j]) / denom;
-    this.lambdaStretchX[j] += gx;
-    this.lambdaStretchY[j] += gy;
-    this.lambdaStretchZ[j] += gz;
-
-    this.x[a].x -= this.w[a] * gx;
-    this.x[a].y -= this.w[a] * gy;
-    this.x[a].z -= this.w[a] * gz;
-    this.x[b].x += this.w[b] * gx;
-    this.x[b].y += this.w[b] * gy;
-    this.x[b].z += this.w[b] * gz;
-
-    if (this.wq[j] > 0) {
-      const qe3bar = this.tmpA.set(qj.z, -qj.y, qj.x, -qj.w);
-      const gq = this.tmpB.set(gx, gy, gz, 0);
-      const dq = qmul(gq, qe3bar, this.tmpC);
-      const s = 2 * this.wq[j] * l0;
-      qj.set(qj.x - s * dq.x, qj.y - s * dq.y, qj.z - s * dq.z, qj.w - s * dq.w).normalize();
-    }
-  }
-
-  /**
-   * Steer-scaled rest curvature (quaternion-imag) for interior node k (between segments
-   * k and k+1), read from the MATERIAL field (advection-safe). The material stores the
-   * full-steer precurve angle per axis; we scale by the steer input and encode sin(φ/2).
-   */
-  private restOmega(k: number, out: Vector3): Vector3 {
-    // use the distal segment's material curvature so the tip's precurve is what bends
-    const angleAxis = this.material.perSegment[k + 1].restCurvature;
-    const tight = Math.max(0, Math.min(1, this.input.steer));
-    const ax = angleAxis.x * tight;
-    const ay = angleAxis.y * tight;
-    const az = angleAxis.z * tight;
-    const phi = Math.hypot(ax, ay, az);
-    if (phi < 1e-9) return out.set(0, 0, 0);
-    const s = Math.sin(0.5 * phi) / phi;
-    return out.set(ax * s, ay * s, az * s);
-  }
-
-  /**
-   * XPBD bend-twist between segments k and k+1. C_b = Im(conj(q_k) q_{k+1}) - s·Ω0 with the
-   * closest-quaternion sign s. Bending uses α_b = ℓ/(4·EI); twist uses α_t = ℓ/(4·GJ).
-   */
-  private solveBendTwist(k: number, dtSeconds: number): void {
-    const j = k;
-    const jp = k + 1;
-    const qj = this.q[j];
-    const qjp = this.q[jp];
-    const omega = qmul(this.tmpA.copy(qj).conjugate(), qjp, this.tmpB);
-    const O0 = this.restOmega(k, _restAxis);
-
-    const minusSq =
-      (omega.x - O0.x) ** 2 + (omega.y - O0.y) ** 2 + (omega.z - O0.z) ** 2 + omega.w ** 2;
-    const plusSq =
-      (omega.x + O0.x) ** 2 + (omega.y + O0.y) ** 2 + (omega.z + O0.z) ** 2 + omega.w ** 2;
-    const sign = plusSq < minusSq ? 1 : -1;
-    const cx = omega.x + sign * O0.x;
-    const cy = omega.y + sign * O0.y;
-    const cz = omega.z + sign * O0.z;
-
-    const wGradSq = this.wq[j] + this.wq[jp] + 1e-9;
-    const mj = this.material.perSegment[j];
-    const mjp = this.material.perSegment[jp];
-    const aBend1 = 0.5 * (mj.alphaBend1 + mjp.alphaBend1);
-    const aBend2 = 0.5 * (mj.alphaBend2 + mjp.alphaBend2);
-    const aTwist = 0.5 * (mj.alphaTwist + mjp.alphaTwist);
-
-    const dl1 = solveXPBDScalar(cx, this.lambdaBend1[k], wGradSq, aBend1, dtSeconds);
-    const dl2 = solveXPBDScalar(cy, this.lambdaBend2[k], wGradSq, aBend2, dtSeconds);
-    const dl3 = solveXPBDScalar(cz, this.lambdaTwist[k], wGradSq, aTwist, dtSeconds);
-    this.lambdaBend1[k] += dl1;
-    this.lambdaBend2[k] += dl2;
-    this.lambdaTwist[k] += dl3;
-
-    const corr = this.tmpC.set(dl1, dl2, dl3, 0);
-    if (this.wq[j] > 0) {
-      const dqj = qmul(qjp, corr, this.tmpA);
-      qj.set(qj.x - this.wq[j] * dqj.x, qj.y - this.wq[j] * dqj.y, qj.z - this.wq[j] * dqj.z, qj.w - this.wq[j] * dqj.w).normalize();
-    }
-    if (this.wq[jp] > 0) {
-      const dqjp = qmul(qj, corr, this.tmpA);
-      qjp.set(qjp.x + this.wq[jp] * dqjp.x, qjp.y + this.wq[jp] * dqjp.y, qjp.z + this.wq[jp] * dqjp.z, qjp.w + this.wq[jp] * dqjp.w).normalize();
-    }
   }
 
   /**
@@ -1202,7 +1069,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     const prev = seed >= 0 && seed < this.lumen.edges.length ? seed : -1;
     const chosen = this.lumen.query(p, prev, out);
     if (
-      this.params.useDirectSolve &&
       prev >= 0 &&
       chosen >= 0 &&
       this.lumen.edges[prev].branchId !== this.lumen.edges[chosen].branchId &&
@@ -1461,6 +1327,170 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return this.x[i].distanceTo(this.lq.center) - allowed;
   }
 
+  /** Read-only developer diagnostic for the lumen owner persisted at a material node. */
+  lumenOwnershipAtNode(i: number): { edge: number; branch: string } {
+    const edge = i >= 0 && i < this.currentEdge.length ? (this.currentEdge[i] ?? -1) : -1;
+    return { edge, branch: edge >= 0 ? (this.lumen.edges[edge]?.branchId ?? "") : "" };
+  }
+
+  /** Snapshot the observable + beam-owned state before a complete physics frame. */
+  beginBranchOwnerFrameGuard(): void {
+    while (this.branchGuardPositionBefore.length < this.n) {
+      this.branchGuardPositionBefore.push(new Vector3());
+      this.branchGuardPrevBefore.push(new Vector3());
+      this.branchGuardVelocityBefore.push(new Vector3());
+      this.branchGuardOmegaBefore.push(new Vector3());
+      this.branchGuardNodeQBefore.push(new Quaternion());
+    }
+    this.branchGuardOwnerBefore.length = this.n;
+    for (let i = 0; i < this.n; i++) {
+      this.branchGuardPositionBefore[i].copy(this.x[i]);
+      this.branchGuardPrevBefore[i].copy(this.prev[i]);
+      this.branchGuardOwnerBefore[i] = this.currentEdge[i] ?? -1;
+      if (this.dVel[i]) this.branchGuardVelocityBefore[i].copy(this.dVel[i]);
+      else this.branchGuardVelocityBefore[i].set(0, 0, 0);
+      if (this.dOmega[i]) this.branchGuardOmegaBefore[i].copy(this.dOmega[i]);
+      else this.branchGuardOmegaBefore[i].set(0, 0, 0);
+      if (this.dNodeQ[i]) this.branchGuardNodeQBefore[i].copy(this.dNodeQ[i]);
+      else this.branchGuardNodeQBefore[i].identity();
+    }
+  }
+
+  setBranchOwnerCoupledTraversal(active: boolean): void {
+    this.branchOwnerCoupledTraversal = active;
+  }
+
+  private usesBranchOwnerStabilization(): boolean {
+    return (
+      this.params.profile === "guidewire" &&
+      Math.abs(this.params.bendComplianceScale - GUIDEWIRE_DIRECT.bendComplianceScale) < 1e-12 &&
+      this.input.deployed <= AORTOILIAC_FIRST_PASS_MAX_DEPLOYED_CM
+    );
+  }
+
+  private isStabilizedBranchPair(branchA: string, branchB: string): boolean {
+    return (
+      (branchA === "aorta" && branchB === "iliac_r") ||
+      (branchA === "iliac_r" && branchB === "aorta")
+    );
+  }
+
+  /** True for the aorta↔right-iliac ostium edge or its immediate same-branch neighbour. */
+  private edgeNearBranchJunction(edgeIndex: number): boolean {
+    const edge = this.lumen.edges[edgeIndex];
+    if (!edge) return false;
+    const branch = edge.branchId;
+    if (branch !== "aorta" && branch !== "iliac_r") return false;
+    const isOtherSide = (other: number): boolean =>
+      this.isStabilizedBranchPair(branch, this.lumen.edges[other]?.branchId ?? "");
+    if (edge.adjacent.some(isOtherSide)) return true;
+    return edge.adjacent.some((sameBranchNeighbour) => {
+      const neighbour = this.lumen.edges[sameBranchNeighbour];
+      return (
+        neighbour?.branchId === branch &&
+        neighbour.adjacent.some(isOtherSide)
+      );
+    });
+  }
+
+  /**
+   * Reject a settled frame that swaps the two branch owners of one material element. Normal ostium
+   * traversal changes one side at a time; `[A,B] → [B,A]` in one frame is a projection artifact.
+   */
+  stabilizeSettledBranchTransitions(): void {
+    if (
+      !this.usesBranchOwnerStabilization() ||
+      !this.branchOwnerSettled ||
+      !this.branchOwnerSettledAfterForward ||
+      this.branchOwnerCoupledTraversal
+    ) {
+      return;
+    }
+    if (this.branchGuardOwnerBefore.length !== this.n) return;
+    const rollbackSegment = (s: number): void => {
+      for (const i of [s, s + 1]) {
+        this.x[i].copy(this.branchGuardPositionBefore[i]);
+        this.prev[i].copy(this.branchGuardPrevBefore[i]);
+        this.currentEdge[i] = this.branchGuardOwnerBefore[i];
+        this.dVel[i]?.copy(this.branchGuardVelocityBefore[i]);
+        this.dOmega[i]?.copy(this.branchGuardOmegaBefore[i]);
+        this.dNodeQ[i]?.copy(this.branchGuardNodeQBefore[i]);
+      }
+      // q[] is the render/segment view derived from the authoritative nodal beam frames. Rebuild it
+      // after restoring the two affected nodal frames so the rollback is internally consistent.
+      segmentFramesFromNodal(this.dNodeQ, this.q);
+    };
+    for (let s = 0; s < this.n - 1; s++) {
+      const beforeA = this.branchGuardOwnerBefore[s];
+      const beforeB = this.branchGuardOwnerBefore[s + 1];
+      const beforeBranchA = this.lumen.edges[beforeA]?.branchId ?? "";
+      const beforeBranchB = this.lumen.edges[beforeB]?.branchId ?? "";
+      const afterBranchA = this.lumen.edges[this.currentEdge[s] ?? -1]?.branchId ?? "";
+      const afterBranchB = this.lumen.edges[this.currentEdge[s + 1] ?? -1]?.branchId ?? "";
+      if (
+        beforeBranchA &&
+        beforeBranchB &&
+        this.isStabilizedBranchPair(beforeBranchA, beforeBranchB) &&
+        beforeBranchA !== beforeBranchB &&
+        afterBranchA === beforeBranchB &&
+        afterBranchB === beforeBranchA
+      ) {
+        rollbackSegment(s);
+        return;
+      }
+    }
+    // A material element at an ostium is constrained by overlapping capsules. The staggered wall
+    // projections can leave a small separating component after feed stops, including one frame after
+    // both endpoints acquire the parent-branch owner. Clamp only the true junction edge or its one-edge
+    // same-branch neighbourhood (never the general shaft and never during traversal), and remove the
+    // matching relative velocity so the correction is not re-injected on the next frame. Moving prev
+    // by the same amount preserves the integrated frame velocity instead of manufacturing an impulse.
+    for (let s = 0; s < this.n - 1; s++) {
+      const edgeA = this.currentEdge[s] ?? -1;
+      const edgeB = this.currentEdge[s + 1] ?? -1;
+      const branchA = this.lumen.edges[edgeA]?.branchId ?? "";
+      const branchB = this.lumen.edges[edgeB]?.branchId ?? "";
+      const inStabilizedJunction =
+        this.isStabilizedBranchPair(branchA, branchB) ||
+        (branchA === branchB && (this.edgeNearBranchJunction(edgeA) || this.edgeNearBranchJunction(edgeB)));
+      if (!branchA || !branchB || !inStabilizedJunction) {
+        continue;
+      }
+      _segAb.subVectors(this.x[s + 1], this.x[s]);
+      const length = _segAb.length();
+      const rest = this.restLen[s] ?? this.h;
+      const triggerLength = rest + BRANCH_TRANSITION_SETTLED_TRIGGER_CM;
+      const maxLength = rest + BRANCH_TRANSITION_SETTLED_STRETCH_CM;
+      // Hysteretic dead band: ordinary junction compliance up to the public 0.15 cm budget is
+      // untouched. Once the transient is about to cross that budget, recover to 0.10 cm in one
+      // observable frame instead of hovering on the threshold.
+      if (length <= triggerLength || length <= 1e-12) continue;
+      _segAb.multiplyScalar(1 / length);
+      const wa = this.invMassAt(s);
+      const wb = this.invMassAt(s + 1);
+      const wSum = wa + wb;
+      if (wSum <= 0) continue;
+      const correction = length - maxLength;
+      _segAp.copy(_segAb).multiplyScalar((correction * wa) / wSum);
+      this.x[s].add(_segAp);
+      this.prev[s].add(_segAp);
+      _segAp.copy(_segAb).multiplyScalar((correction * wb) / wSum);
+      this.x[s + 1].sub(_segAp);
+      this.prev[s + 1].sub(_segAp);
+
+      const va = this.dVel[s];
+      const vb = this.dVel[s + 1];
+      if (va && vb) {
+        _segAp.subVectors(vb, va);
+        const separatingSpeed = _segAp.dot(_segAb);
+        if (separatingSpeed > 0) {
+          va.addScaledVector(_segAb, (separatingSpeed * wa) / wSum);
+          vb.addScaledVector(_segAb, (-separatingSpeed * wb) / wSum);
+        }
+      }
+    }
+  }
+
   private isVesselContactClippedAtNode(i: number): boolean {
     // A diverged covered node (coax pairing broken: its sheath fled past the break threshold) is
     // EXEMPTED from the channel clip — it regains vessel-wall contact so it stays in the vessel
@@ -1475,50 +1505,6 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     return this.vesselContactClipLength > 0 && (s + 0.5) * this.h < this.vesselContactClipLength;
   }
 
-  private isVesselFrictionMutedAtNode(i: number): boolean {
-    return this.vesselContactClipLength > 0 && i * this.h < this.vesselContactClipLength + COAX_PORTAL_BLEND;
-  }
-
-  private isVesselFrictionMutedAtSegment(s: number): boolean {
-    return (
-      this.vesselContactClipLength > 0 &&
-      (s + 0.5) * this.h < this.vesselContactClipLength + COAX_PORTAL_BLEND
-    );
-  }
-
-  private muteWallFriction(c: Contact): void {
-    c.hasAnchor = false;
-    c.lambdaT.x = 0;
-    c.lambdaT.y = 0;
-    c.lambdaRoll = 0;
-  }
-
-  private resetElasticLambdas(): void {
-    this.lambdaStretchX.fill(0);
-    this.lambdaStretchY.fill(0);
-    this.lambdaStretchZ.fill(0);
-    this.lambdaBend1.fill(0);
-    this.lambdaBend2.fill(0);
-    this.lambdaTwist.fill(0);
-  }
-
-  /**
-   * Hard inlet anchor: place the kinematic proximal node at the MOVING inlet point
-   * (x_A + inletOffsetTarget·e_A) and set the proximal frame to the access frame rolled by
-   * the hub angle. This is the stiff-motor limit of solveInletPositionMotor /
-   * solveInletOrientationMotor (insertion.ts) — a MOVING Dirichlet boundary, not a fixed
-   * material pin: rest lengths stay frozen and material is injected through it. It is the
-   * stable anchor that prevents rigid-body drift; Stage 3 swaps in the compliant motor +
-   * force cap so a blocked tip stalls instead of injecting infinite force.
-   */
-  private anchorInlet(): void {
-    // boundary node fixed at the access plane (axial 0); material is injected through it and
-    // the stretch constraint advances the chain — node 0 itself does not translate with feed
-    this.x[0].copy(this.access.x);
-    this.prev[0].copy(this.x[0]); // kinematic: no Verlet velocity on the boundary node
-    injectedFrame(this.access, this.insertion.rollTarget, this.q[0]);
-  }
-
   /** Current deployed (intravascular) arc length ≈ injected segments × h + inlet offset. */
   deployedLength(): number {
     return (this.n - 1) * this.h + this.insertion.inletOffset;
@@ -1531,109 +1517,9 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    */
   private feedVelocityForFrame(dt: number): number {
     const want = this.input.deployed - this.deployedLength();
-    const rate = this.params.useDirectSolve ? CosseratRod.D_FEED_RATE : CosseratRod.FEED_RATE;
-    const maxStep = rate * Math.min(dt, 1 / 30);
+    const maxStep = CosseratRod.D_FEED_RATE * Math.min(dt, 1 / 30);
     const stepLen = Math.max(-maxStep, Math.min(maxStep, want));
     return stepLen / Math.max(dt, 1e-6); // cm/s
-  }
-
-  /**
-   * Substep Δt_s in seconds for this frame: dt / S. The elastic compliance enters as
-   * α̃ = α/Δt_s² (units.ts/xpbd.ts). NOTE the substep count is a real STIFFNESS knob for this
-   * quasi-static rod (the doc allows quasi-static orientations for a highly damped trainer, §5):
-   * more substeps ⇒ smaller Δt_s ⇒ larger α̃ ⇒ softer elastic response. S=2 (GUIDEWIRE) is tuned
-   * so the rod both advances ~1:1 and the floppy tip still expresses its pre-shaped rest curvature.
-   */
-  dtSeconds(dt: number): number {
-    return dt / Math.max(1, this.params.substeps);
-  }
-
-  /**
-   * Begin one substep (design doc step-1..4): inject/retract material at the access plane,
-   * predict positions (damped Verlet + CFL clamp), reset the elastic multipliers, and rebuild
-   * the persistent wall/segment/self contacts. Split out of step() so a multi-instrument
-   * coordinator (stepCoaxial) can drive both rods' substep prologue before the interleaved solve.
-   */
-  beginSubstep(feedVelocity: number, rollVelocity: number, dtSeconds: number): void {
-    // 1. feed targets + material injection/retraction at the access plane (frozen rest length h;
-    //    no global rest-length growth → no eigenstrain → no accordion)
-    injectOrRetractNodesAtAccess(this, this.access, this.insertion, feedVelocity, rollVelocity, dtSeconds);
-
-    // 2. predict positions (damped Verlet; no external force — the feed drives motion). The
-    //    kinematic boundary node (w=0) is left to anchorInlet(). The velocity is re-read each
-    //    substep so a perturbation is damped S× per frame rather than amplified once.
-    //
-    //    SWEPT-SAFETY / CFL CLAMP (Stage 4, design doc §7): a node's per-substep position change
-    //    is clamped to 0.25·min(R_lumen, h) so a fast feed/relaxation cannot tunnel a node THROUGH
-    //    a wall between contact builds (the cheap alternative to true swept collision).
-    // Time-constant velocity damping: per-substep retention exp(−Δt_s/τ) ⇒ per-FRAME damping
-    // exp(−Δt/τ), independent of the substep count (so Small-Steps does not change the felt
-    // damping). Falls back to the legacy per-substep constant when dampingTau is 0/unset.
-    const d = this.params.dampingTau > 0 ? Math.exp(-dtSeconds / this.params.dampingTau) : this.params.damping;
-    const fdt2 = dtSeconds * dtSeconds; // a·Δt_s² = w·F·Δt_s² added to the Verlet displacement
-    const fx = this.bodyForce.x;
-    const fy = this.bodyForce.y;
-    const fz = this.bodyForce.z;
-    const hasForce = fx !== 0 || fy !== 0 || fz !== 0;
-    for (let i = 0; i < this.n; i++) {
-      if (this.w[i] === 0) continue;
-      const x = this.x[i];
-      const p = this.prev[i];
-      let vx = (x.x - p.x) * d;
-      let vy = (x.y - p.y) * d;
-      let vz = (x.z - p.z) * d;
-      if (hasForce) {
-        vx += this.w[i] * fx * fdt2;
-        vy += this.w[i] * fy * fdt2;
-        vz += this.w[i] * fz * fdt2;
-      }
-      const step2 = vx * vx + vy * vy + vz * vz;
-      const rLumen = this.localLumenRadius(i);
-      const maxStep = 0.25 * Math.min(rLumen, this.h);
-      if (step2 > maxStep * maxStep && step2 > 1e-18) {
-        const s = maxStep / Math.sqrt(step2);
-        vx *= s;
-        vy *= s;
-        vz *= s;
-      }
-      p.copy(x);
-      x.set(x.x + vx, x.y + vy, x.z + vz);
-    }
-
-    // 3. reset elastic multipliers (XPBD: elastic λ are bilateral, reset each substep). NOTE: a
-    //    frame-level warm-start was trialled (accumulate λ across substeps to hold a static load),
-    //    but it does NOT cure the "too flexible" creep — that is Gauss-Seidel UNDER-CONVERGENCE of
-    //    the distributed bending mode (bend propagates ~1 node/iteration down the chain; Deul 2018),
-    //    which needs a better solver (Phase 3), not λ warm-starting — and warm-starting destabilised
-    //    the near-concentric coax. So the per-substep reset stands.
-    this.resetElasticLambdas();
-    this.insertion.lambdaFeed = 0;
-
-    // 4. build / refresh persistent frictional wall contacts (geometry + lifecycle only). Friction
-    //    multipliers + anchors PERSIST across substeps/frames; only λ_n is reset per iteration.
-    this.buildContacts();
-  }
-
-  /**
-   * Per-frame hook for future direct/implicit solvers. Elastic multipliers are still reset per
-   * substep in beginSubstep; this method intentionally does not warm-start the current XPBD pass.
-   */
-  beginFrame(): void {
-    // Per-frame hook (currently a no-op — elastic λ are reset per substep in beginSubstep). Kept as
-    // the place a future direct/implicit solver (Phase 3) would do its once-per-frame setup.
-  }
-
-  /** One elastic Gauss-Seidel iteration: anchor the inlet, symmetric stretch/bend sweep, anchor. */
-  iterateElastic(dtSeconds: number): void {
-    const segs = this.q.length;
-    // proximal boundary: hard moving inlet anchor (stiff-motor limit; see anchorInlet)
-    this.anchorInlet();
-    // elastic: bilateral interleaving (forward then backward) for symmetric convergence
-    for (let j = 0; j < segs; j++) this.solveStretchShear(j, dtSeconds);
-    for (let kk = 0; kk < segs - 1; kk++) this.solveBendTwist(kk, dtSeconds);
-    for (let kk = segs - 2; kk >= 0; kk--) this.solveBendTwist(kk, dtSeconds);
-    for (let j = segs - 1; j >= 0; j--) this.solveStretchShear(j, dtSeconds);
-    this.anchorInlet();
   }
 
   /** True if this rod currently has any active wall/segment/self contact to solve. */
@@ -1646,58 +1532,9 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   }
 
   /**
-   * One IN-LOOP wall/self contact iteration (design doc §3 ordering + §7): reset λ_n, solve the
-   * normal inequalities (NODE walls → SEGMENT-sample walls → SELF-collision), re-solve the rod so
-   * the correction propagates, then translational + spin friction. The normal multiplier is reset
-   * here each iteration (re-evaluated inequality); friction λ + anchors carry over (persistent
-   * static friction / torque storage). No-op (and so the symmetric free advancement is preserved)
-   * when nothing is in contact range. Returns whether any contact was solved.
-   */
-  iterateWallContact(dtSeconds: number): boolean {
-    if (!this.hasWallContacts()) return false;
-    const segs = this.q.length;
-    for (const c of this.activeContacts) resetNormalLambda(c);
-    for (const c of this.activeSegContacts) resetNormalLambda(c);
-    for (const sc of this.activeSelfContacts) sc.lambdaN = 0;
-    for (const c of this.activeContacts) solveNormalContact(this, c, dtSeconds);
-    for (const c of this.activeSegContacts) this.solveSegmentWallContact(c, dtSeconds);
-    for (const sc of this.activeSelfContacts) this.solveSelfContact(sc, dtSeconds);
-
-    // re-solve the rod so the contact correction propagates through stretch/bend (symmetric)
-    for (let j = 0; j < segs; j++) this.solveStretchShear(j, dtSeconds);
-    for (let kk = 0; kk < segs - 1; kk++) this.solveBendTwist(kk, dtSeconds);
-    for (let kk = segs - 2; kk >= 0; kk--) this.solveBendTwist(kk, dtSeconds);
-    for (let j = segs - 1; j >= 0; j--) this.solveStretchShear(j, dtSeconds);
-    this.anchorInlet();
-
-    // friction uses λ_n from THIS iteration as the normal load (node + segment contacts)
-    for (const c of this.activeContacts) {
-      if (this.isVesselFrictionMutedAtNode(c.node)) {
-        this.muteWallFriction(c);
-        continue;
-      }
-      solveTranslationalFriction(this, c, dtSeconds);
-      solveSpinFriction(this, c, dtSeconds);
-    }
-    for (const c of this.activeSegContacts) {
-      if (this.isVesselFrictionMutedAtSegment(c.segment)) {
-        this.muteWallFriction(c);
-        continue;
-      }
-      solveTranslationalFriction(this, c, dtSeconds);
-    }
-    return true;
-  }
-
-  /** Final inlet anchor at the end of a substep (the kinematic boundary settles). */
-  finishSubstep(): void {
-    this.anchorInlet();
-  }
-
-  /**
-   * Map the legacy RodInput.deployed/torque into this frame's feed velocity + roll target, then
-   * return the feed velocity (cm/s). Public so the CoaxialAssembly coordinator can prime each
-   * rod's per-frame feed exactly like the solo step() does.
+   * Map the RodInput.deployed/torque into this frame's feed velocity + roll target, then return the
+   * feed velocity (cm/s). Public so the CoaxialAssembly coordinator can prime each rod's per-frame
+   * feed exactly like the solo step() does.
    */
   feedVelocityForFramePublic(dt: number): number {
     this.insertion.rollTarget = this.input.torque;
@@ -1854,7 +1691,7 @@ export class CosseratRod implements Injectable, NodeContactTarget {
   }
 
   private usesDirectCompliantFeed(): boolean {
-    return this.params.useDirectSolve === true && this.params.useCompliantFeedMotor === true;
+    return this.params.useCompliantFeedMotor === true;
   }
 
   private directInletInvMass(): number {
@@ -2016,8 +1853,26 @@ export class CosseratRod implements Injectable, NodeContactTarget {
         _v.multiplyScalar((allowed - rho) / rho);
         this.x[s].addScaledVector(_v, (2 * wa) / wSum);
         this.x[s + 1].addScaledVector(_v, (2 * wb) / wSum);
-        this.currentEdge[s] = this.lq.edgeIndex;
-        this.currentEdge[s + 1] = this.lq.edgeIndex;
+        const branchA = this.lumen.edges[this.currentEdge[s] ?? -1]?.branchId ?? "";
+        const branchB = this.lumen.edges[this.currentEdge[s + 1] ?? -1]?.branchId ?? "";
+        if (
+          !this.usesBranchOwnerStabilization() ||
+          !this.branchOwnerSettled ||
+          !this.branchOwnerSettledAfterForward ||
+          this.branchOwnerCoupledTraversal ||
+          !branchA ||
+          !branchB ||
+          !this.isStabilizedBranchPair(branchA, branchB) ||
+          branchA === branchB
+        ) {
+          // While material is actively traversing an ostium, midpoint ownership advances both
+          // endpoints as before (this is part of the calibrated pushability behavior). Once feed has
+          // stopped, a segment already straddling two branches keeps those endpoint owners: copying
+          // the midpoint's single branch into both makes the next node pass reverse them and inject a
+          // large non-physical stretch transient during settling.
+          this.currentEdge[s] = this.lq.edgeIndex;
+          this.currentEdge[s + 1] = this.lq.edgeIndex;
+        }
         changed = true;
       }
       if (!changed) break;
@@ -2145,6 +2000,13 @@ export class CosseratRod implements Injectable, NodeContactTarget {
    * Coax uses this to snapshot both rods before any staggered contact projection is finalized.
    */
   beginDirectSubstep(feedVelocity: number, dts: number): void {
+    const feedSpeed = Math.abs(feedVelocity);
+    if (feedSpeed > BRANCH_OWNER_SETTLE_EXIT_SPEED_CM_S) {
+      this.branchOwnerSettled = false;
+      this.branchOwnerSettledAfterForward = feedVelocity > 0;
+    } else if (!this.branchOwnerSettled && feedSpeed < BRANCH_OWNER_SETTLE_ENTER_SPEED_CM_S) {
+      this.branchOwnerSettled = true;
+    }
     if (!Number.isFinite(this.insertion.inletOffsetTarget)) this.insertion.inletOffsetTarget = 0;
     if (!Number.isFinite(this.insertion.inletOffset)) this.insertion.inletOffset = 0;
     if (!Number.isFinite(this.insertion.lambdaFeed)) this.insertion.lambdaFeed = 0;
@@ -2210,35 +2072,18 @@ export class CosseratRod implements Injectable, NodeContactTarget {
     this.finalizeDirectSubstep(dts);
   }
 
-  /** Dynamic co-rotational beam frame step (replaces the XPBD substep loop when useDirectSolve). */
-  private stepDirect(dt: number): void {
+  /** Dynamic co-rotational beam frame step (the single per-frame solve). */
+  step(dt: number): void {
+    // No elapsed (or non-finite) time ⇒ no physics change. Stepping with dt ≤ 0 would make the
+    // beam tangent (M/Δt²) diverge (Infinity → NaN) and corrupt the rod permanently.
+    if (!Number.isFinite(dt) || dt <= 0) return;
     // FIXED internal substeps (ignore params.substeps) ⇒ substep-invariant by construction.
     const S = CosseratRod.D_SUBSTEPS;
     const dts = dt / S;
     const feedVelocity = this.feedVelocityForFramePublic(dt);
-    this.beginFrame();
+    this.beginBranchOwnerFrameGuard();
     for (let sub = 0; sub < S; sub++) this.directSubstep(feedVelocity, dts);
-  }
-
-  step(dt: number): void {
-    // No elapsed (or non-finite) time ⇒ no physics change. Stepping with dt ≤ 0 would make the
-    // XPBD compliance α̃ = α/Δt_s² diverge (Infinity → NaN) and corrupt the rod permanently.
-    if (!Number.isFinite(dt) || dt <= 0) return;
-    if (this.params.useDirectSolve) return this.stepDirect(dt);
-    const S = Math.max(1, this.params.substeps);
-    const dtSeconds = this.dtSeconds(dt);
-    const feedVelocity = this.feedVelocityForFramePublic(dt);
-    const iters = this.params.iterations;
-
-    this.beginFrame();
-    for (let sub = 0; sub < S; sub++) {
-      this.beginSubstep(feedVelocity, 0, dtSeconds);
-      for (let it = 0; it < iters; it++) {
-        this.iterateElastic(dtSeconds);
-        this.iterateWallContact(dtSeconds);
-      }
-      this.finishSubstep();
-    }
+    this.stabilizeSettledBranchTransitions();
   }
 
   tip(): Vector3 {
@@ -2252,30 +2097,10 @@ export class CosseratRod implements Injectable, NodeContactTarget {
 }
 
 /** A floppier guidewire (higher bend compliance) for comparison tests. */
-export const GUIDEWIRE_FLOPPY: CosseratParams = { ...GUIDEWIRE, bendComplianceScale: 8 };
+export const GUIDEWIRE_FLOPPY: CosseratParams = { ...GUIDEWIRE_DIRECT, bendComplianceScale: 8 };
 /** A stiffer guidewire (lower bend compliance) for comparison tests. */
-export const GUIDEWIRE_STIFF: CosseratParams = { ...GUIDEWIRE, bendComplianceScale: 0.05 };
+export const GUIDEWIRE_STIFF: CosseratParams = { ...GUIDEWIRE_DIRECT, bendComplianceScale: 0.05 };
 
-/**
- * DIRECT-SOLVE presets (Phase 3): the dynamic co-rotational beam at a COARSER discretization
- * (h = 0.5 cm, ~half the nodes). Phase-0 verification keeps the numerical-tangent work counted while
- * the analytic consistent tangent remains deferred. The FEM beam captures the shape with fewer elements
- * (legacy needed h = 0.25
- * only because XPBD under-converges), so realised EI is preserved. tipNodes/transitionNodes are halved
- * to keep the SAME physical tip/transition lengths, and tipCurve is doubled to keep the same rest
- * CURVATURE (rad/cm). Full h = 0.25 resolution would need the analytic consistent tangent (deferred).
- */
-export const GUIDEWIRE_DIRECT: CosseratParams = {
-  ...GUIDEWIRE,
-  segments: 40, // h = 20/40 = 0.5 cm
-  tipNodes: 3, // 3·0.5 = 1.5 cm (= 6·0.25)
-  transitionNodes: 6, // 6·0.5 = 3 cm (= 12·0.25)
-  tipCurve: 0.44, // doubled ⇒ same rest curvature (rad/cm) as the h=0.25 preset
-  useDirectSolve: true,
-  useCompliantFeedMotor: true
-};
-/** Direct-solve sheath/catheter at the matching coarser discretization. */
-export const SHEATH_DIRECT: CosseratParams = { ...SHEATH, segments: 40, useDirectSolve: true };
 /** Single source of truth for the currently shipped live app presets. */
 export const SHIPPED_GUIDEWIRE = GUIDEWIRE_DIRECT;
 export const SHIPPED_SHEATH = SHEATH_DIRECT;
@@ -2320,7 +2145,6 @@ export function guidewireForProfile(id: GuidewireProfileId): CosseratParams {
  * stiff cylindrical support for the covered wire: the wire may slide axially with friction, but its
  * centerline should not leave the catheter's inner radius before the open portal.
  */
-const COAX_ALPHA_N = 1e-8;
 const COAX_DIRECT_ALPHA_N = 1e-4;
 /** Coax friction compliance (cm-units). */
 const COAX_ALPHA_T = 1e-6;
@@ -2330,8 +2154,6 @@ const COAX_ALPHA_T = 1e-6;
  * (the operator easily overcomes it) — the lateral SUPPORT comes from the normal containment,
  * not from gripping the wire. The persistent coax anchor still gives a little stick-slip feel.
  */
-const COAX_MU_STATIC = 0.04;
-const COAX_MU_KINETIC = 0.02;
 // Kept LOW (lubricated hydrophilic wire-in-catheter interface). An attempt to raise these toward the
 // wire↔WALL literature band (0.012/0.006, ~3×) was reverted after EMPIRICAL validation: the added
 // coax drag made the wire stall and buckle inside the sheath rather than telescope through it —
@@ -2537,14 +2359,14 @@ export class CoaxialAssembly {
   constructor(outer: CosseratRod, inner: CosseratRod) {
     this.outer = outer;
     this.inner = inner;
-    const directCoax = outer.params.useDirectSolve && inner.params.useDirectSolve;
-    this.coaxAlphaN = directCoax ? COAX_DIRECT_ALPHA_N : COAX_ALPHA_N;
-    this.coaxMuStatic = directCoax ? COAX_DIRECT_MU_STATIC : COAX_MU_STATIC;
-    this.coaxMuKinetic = directCoax ? COAX_DIRECT_MU_KINETIC : COAX_MU_KINETIC;
-    this.outerMassScale =
-      directCoax ? COAX_DIRECT_OUTER_MASS_SCALE : COAX_OUTER_MASS_SCALE;
-    this.centeringGain = directCoax ? COAX_DIRECT_CENTERING_GAIN : COAX_CENTERING_GAIN;
-    this.centeringOuterMassScale = directCoax ? 0 : 1;
+    // Both rods are the dynamic co-rotational beam (the legacy XPBD lane was deleted in Phase H), so
+    // the coax coupling always uses the DIRECT-lane calibration.
+    this.coaxAlphaN = COAX_DIRECT_ALPHA_N;
+    this.coaxMuStatic = COAX_DIRECT_MU_STATIC;
+    this.coaxMuKinetic = COAX_DIRECT_MU_KINETIC;
+    this.outerMassScale = COAX_DIRECT_OUTER_MASS_SCALE;
+    this.centeringGain = COAX_DIRECT_CENTERING_GAIN;
+    this.centeringOuterMassScale = 0;
   }
 
   /** Convenience: set the legacy deployed/steer/torque input on the inner wire. */
@@ -2760,7 +2582,6 @@ export class CoaxialAssembly {
    * open-portal blend is left soft so the wire can exit the sheath tip without a fake lip.
    */
   private projectDirectCoveredInnerIntoOuterChannel(): void {
-    if (!(this.inner.params.useDirectSolve && this.outer.params.useDirectSolve)) return;
     for (let pass = 0; pass < COAX_DIRECT_RIGID_CHANNEL_PASSES; pass++) {
       let changed = false;
       for (const c of this.activeCoax) {
@@ -2823,18 +2644,16 @@ export class CoaxialAssembly {
   }
 
   /**
-   * Step the coaxial pair one frame with INTERLEAVED solving (design doc §6 ordering). Both rods
-   * use their legacy RodInput (deployed/steer/torque) mapped through their own insertion BC, so a
-   * caller can keep driving them exactly like a solo rod. Substeps/iterations are taken from the
-   * INNER rod's params (the wire is the limiting stiffness; both share the same frame dt).
+   * Step the coaxial pair one frame with the DYNAMIC CO-ROTATIONAL BEAM for both rods, INTERLEAVED
+   * (design doc §6 ordering). Each rod is driven by its own RodInput (deployed/steer/torque) through
+   * its own insertion BC, so a caller drives them exactly like a solo rod. Because the beam step owns
+   * one snapshot per rod, the coordinator interleaves Newton rounds and projects wall + coax
+   * constraints before either rod finalizes velocity (no "late coax projection" ordering artifact).
    */
-  /**
-   * Coaxial frame step with the DYNAMIC CO-ROTATIONAL BEAM for both rods (Phase 3). Because the beam
-   * step now owns one snapshot per rod, the coordinator can interleave Newton rounds and project wall
-   * + coax constraints before either rod finalizes velocity. This fixes the old "late coax projection"
-   * ordering where inner↔outer corrections happened after each rod had already published dVel/dOmega.
-   */
-  private stepDirectCoax(dt: number): void {
+  step(dt: number): void {
+    // No elapsed (or non-finite) time ⇒ no physics change (see CosseratRod.step): a dt ≤ 0 step
+    // diverges the beam tangent (M/Δt²) to NaN and permanently corrupts both rods.
+    if (!Number.isFinite(dt) || dt <= 0) return;
     const inner = this.inner;
     const outer = this.outer;
     const COAX_ROUNDS = 4;
@@ -2842,8 +2661,12 @@ export class CoaxialAssembly {
     const dts = dt / S;
     const feedInner = inner.feedVelocityForFramePublic(dt);
     const feedOuter = outer.feedVelocityForFramePublic(dt);
-    outer.beginFrame();
-    inner.beginFrame();
+    inner.setBranchOwnerCoupledTraversal(
+      Math.abs(feedOuter) > BRANCH_OWNER_SETTLE_EXIT_SPEED_CM_S ||
+      outer.input.deployed > inner.input.deployed
+    );
+    outer.beginBranchOwnerFrameGuard();
+    inner.beginBranchOwnerFrameGuard();
     for (let sub = 0; sub < S; sub++) {
       // covered inner material is inside the sheath channel until the open portal at the outer tip
       outer.beginDirectSubstep(feedOuter, dts);
@@ -2857,6 +2680,11 @@ export class CoaxialAssembly {
       for (let r = 0; r < rounds; r++) {
         outer.directBeamNewtonRound(dts);
         inner.directBeamNewtonRound(dts);
+        // Beam motion can newly invalidate a covered wire-to-sheath pairing. Refresh the divergence
+        // mask before projecting vessel contacts so an escaped node regains wall containment in this
+        // Newton round instead of one round late. Rebuild again below after wall projection because
+        // that correction can repair a previously diverged pairing.
+        this.buildCoaxContacts();
         outer.directProjectContacts(dts);
         inner.directProjectContacts(dts);
         this.buildCoaxContacts();
@@ -2873,56 +2701,8 @@ export class CoaxialAssembly {
       this.buildCoaxContacts();
       this.projectDirectCoveredInnerIntoOuterChannel();
     }
-  }
-
-  step(dt: number): void {
-    // No elapsed (or non-finite) time ⇒ no physics change (see CosseratRod.step): a dt ≤ 0
-    // step diverges the XPBD compliance to NaN and permanently corrupts both rods.
-    if (!Number.isFinite(dt) || dt <= 0) return;
-    // Phase-3: when both rods use the dynamic beam, take the coax direct path.
-    if (this.inner.params.useDirectSolve && this.outer.params.useDirectSolve) return this.stepDirectCoax(dt);
-    const inner = this.inner;
-    const outer = this.outer;
-    const S = Math.max(1, inner.params.substeps);
-    const dtIn = inner.dtSeconds(dt);
-    const dtOut = outer.dtSeconds(dt);
-    // legacy input → per-rod feed velocity + roll target (same adapter the solo step uses)
-    const feedInner = inner.feedVelocityForFramePublic(dt);
-    const feedOuter = outer.feedVelocityForFramePublic(dt);
-    const itersInner = inner.params.iterations;
-    const itersOuter = outer.params.iterations;
-    const iters = Math.max(itersInner, itersOuter);
-
-    outer.beginFrame();
-    inner.beginFrame();
-    for (let sub = 0; sub < S; sub++) {
-      // 1–4. each rod's substep prologue: inject/retract, predict, reset λ, build wall contacts
-      outer.beginSubstep(feedOuter, 0, dtOut);
-      // Covered inner material is physically inside the sheath/catheter channel. It should not build
-      // vessel-wall contacts or choose vessel branches until it reaches the open portal at the outer
-      // tip; before that, coax containment owns its path.
-      inner.vesselContactClipLength = outer.deployedLength();
-      inner.vesselContactClipRadius = outer.coaxLumenRadius;
-      inner.beginSubstep(feedInner, 0, dtIn);
-      // coax pairing (after both predicted, before the interleaved solve)
-      this.buildCoaxContacts();
-
-      // 5. interleaved nonlinear Gauss-Seidel. Per iteration: each rod's elastic block, then ALL
-      //    normal contacts (each rod's wall + the coax inner-in-outer), then friction. Never solve
-      //    one rod fully then the other once (the one-way support artifact, top-pitfall #9).
-      for (let it = 0; it < iters; it++) {
-        outer.iterateElastic(dtOut);
-        inner.iterateElastic(dtIn);
-        // normal contacts: vessel walls for both, then inner-in-outer coax (bilateral support)
-        outer.iterateWallContact(dtOut);
-        inner.iterateWallContact(dtIn);
-        this.solveCoaxNormalIteration(dtIn);
-        // friction phase: coax sliding friction (wall friction already ran inside iterateWallContact)
-        this.solveCoaxFrictionIteration(dtIn);
-      }
-      outer.finishSubstep();
-      inner.finishSubstep();
-    }
+    outer.stabilizeSettledBranchTransitions();
+    inner.stabilizeSettledBranchTransitions();
   }
 
   /** Number of coax contacts currently active (diagnostics/tests). */

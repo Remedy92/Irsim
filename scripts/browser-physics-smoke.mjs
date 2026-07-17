@@ -37,7 +37,9 @@ const thresholds = {
   maxSegmentErrorCm: Number(args.get("max-seg-error") ?? 0.15),
   maxSettleSpeedCmS: Number(args.get("max-settle-speed") ?? 2),
   minWireExitCm: Number(args.get("min-wire-exit") ?? 2),
-  maxCoveredRhoSlackCm: Number(args.get("max-covered-rho-slack") ?? 0.02)
+  maxCoveredRhoSlackCm: Number(args.get("max-covered-rho-slack") ?? 0.02),
+  maxCoveredTrueDistanceCm: Number(args.get("max-covered-true-distance") ?? 0.5),
+  maxUncontainedWallPenetrationCm: Number(args.get("max-uncontained-wall-penetration") ?? 0.05)
 };
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -217,8 +219,31 @@ const summaryExpression = (name) => `
     x.rods.wire.maxWallPenetration > ${thresholds.maxWallPenetrationCm} ||
     x.rods.sheath.maxWallPenetration > ${thresholds.maxWallPenetrationCm} ||
     x.rods.wire.maxSegmentLengthError > ${thresholds.maxSegmentErrorCm} ||
-    x.rods.sheath.maxSegmentLengthError > ${thresholds.maxSegmentErrorCm}
+    x.rods.sheath.maxSegmentLengthError > ${thresholds.maxSegmentErrorCm} ||
+    x.coax.maxCoveredPerpRho > x.coax.innerClearance + ${thresholds.maxCoveredRhoSlackCm} ||
+    x.coax.maxCoveredTrueDistance >= ${thresholds.maxCoveredTrueDistanceCm} ||
+    x.coax.maxUncontainedWallPenetration > ${thresholds.maxUncontainedWallPenetrationCm} ||
+    x.coax.divergedNodeCount !== 0
   );
+  const wireCommandSchedule = [];
+  for (const x of h) {
+    const command = x.inputs.wire.deployed;
+    const steps = Math.round((x.dt ?? 0) * 60);
+    const previous = wireCommandSchedule.at(-1);
+    if (!previous || Math.abs(previous.command - command) > 1e-12) {
+      wireCommandSchedule.push({
+        command,
+        steps,
+        physicsStepAfterFrame: x.physicsStep ?? null,
+        frame: x.frame,
+        nodes: x.rods.wire.nodes
+      });
+    } else {
+      previous.steps += steps;
+      previous.physicsStepAfterFrame = x.physicsStep ?? previous.physicsStepAfterFrame;
+    }
+  }
+  const firstBadIndex = bad.length ? h.indexOf(bad[0]) : -1;
   return {
     name: ${JSON.stringify(name)},
     frames: h.length,
@@ -244,7 +269,10 @@ const summaryExpression = (name) => `
       coaxMaxLoad: max((x) => x.coax.normalLoad),
       coaxMaxContacts: max((x) => x.coax.activeContacts),
       coaxInnerClearance: s.coax.innerClearance,
-      coaxMaxCoveredRho: max((x) => x.coax.maxCoveredInnerRho),
+      coaxMaxCoveredPerpRho: max((x) => x.coax.maxCoveredPerpRho),
+      coaxMaxCoveredTrueDistance: max((x) => x.coax.maxCoveredTrueDistance),
+      coaxMaxUncontainedWallPenetration: max((x) => x.coax.maxUncontainedWallPenetration),
+      coaxMaxDivergedNodeCount: max((x) => x.coax.divergedNodeCount),
       wireExitPastOuterTipMin: min((x) => x.coax.innerExitPastOuterTip),
       wireExitPastOuterTipMax: max((x) => x.coax.innerExitPastOuterTip),
       wireExitPastOuterTipFinal: s.coax.innerExitPastOuterTip,
@@ -254,8 +282,10 @@ const summaryExpression = (name) => `
       stepMsFrames: stepMsAll.length,
       maxTangentAssemblies: h.reduce((m, x) => Math.max(m, x.perf ? x.perf.tangentAssemblies : 0), 0),
       maxElementForceEvals: h.reduce((m, x) => Math.max(m, x.perf ? x.perf.elementForceEvals : 0), 0),
+      wireCommandSchedule,
       badFrameCount: bad.length,
-      firstBad: bad[0] ?? null
+      firstBad: bad[0] ?? null,
+      firstBadContext: firstBadIndex >= 0 ? h.slice(Math.max(0, firstBadIndex - 2), firstBadIndex + 3) : []
     }
   };
 })()
@@ -288,10 +318,23 @@ function assertScenario(report) {
       failures.push(`${report.name}: sheath reset settling speed ${summary.sheathMaxTipSpeed.toFixed(4)}cm/s`);
     }
   }
-  if (summary.coaxMaxCoveredRho > summary.coaxInnerClearance + thresholds.maxCoveredRhoSlackCm) {
+  if (summary.coaxMaxCoveredPerpRho > summary.coaxInnerClearance + thresholds.maxCoveredRhoSlackCm) {
     failures.push(
-      `${report.name}: covered wire radial offset ${summary.coaxMaxCoveredRho.toFixed(4)}cm exceeds catheter clearance`
+      `${report.name}: covered wire perpendicular radius ${summary.coaxMaxCoveredPerpRho.toFixed(4)}cm exceeds catheter clearance`
     );
+  }
+  if (summary.coaxMaxCoveredTrueDistance >= thresholds.maxCoveredTrueDistanceCm) {
+    failures.push(
+      `${report.name}: covered wire true sheath distance ${summary.coaxMaxCoveredTrueDistance.toFixed(4)}cm reaches the divergence limit`
+    );
+  }
+  if (summary.coaxMaxUncontainedWallPenetration > thresholds.maxUncontainedWallPenetrationCm) {
+    failures.push(
+      `${report.name}: uncontained covered-wire wall penetration ${summary.coaxMaxUncontainedWallPenetration.toFixed(4)}cm`
+    );
+  }
+  if (summary.coaxMaxDivergedNodeCount !== 0) {
+    failures.push(`${report.name}: ${summary.coaxMaxDivergedNodeCount} covered wire node(s) diverged from the sheath`);
   }
   if (report.name === "wire-forward-28x-w" && summary.wireExitPastOuterTipMax < thresholds.minWireExitCm) {
     failures.push(

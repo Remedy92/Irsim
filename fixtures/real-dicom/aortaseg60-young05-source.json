@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "aortaseg60-v1.1-young-05",
+  "description": "Selected normal arterial-phase CTA source and automated aorta mask for a reproducible IRsim-derived DICOM engineering fixture. This source is not expert-corrected ground truth.",
+  "source": {
+    "dataset": "AortaSeg-60",
+    "version": "1.1",
+    "recordId": 18147026,
+    "recordUrl": "https://zenodo.org/records/18147026",
+    "apiUrl": "https://zenodo.org/api/records/18147026",
+    "doi": "10.5281/zenodo.18147026",
+    "citation": "El Rahal D, Rotzinger DC, Fahrni G. AortaSeg-60 (Version 1.1). Zenodo, 2026.",
+    "case": "Young_05",
+    "phase": "arterial",
+    "selectionRationale": "Smallest Young-category image/mask pair; normal aortic morphology; full-resolution volume fits IRsim browser safety limits. Expert vascular landmark review remains required."
+  },
+  "license": {
+    "zenodoMetadata": "CC0 1.0 Universal",
+    "includedReadme": "CC BY 4.0 International",
+    "effectiveFixturePolicy": "Apply the stricter CC BY 4.0 attribution terms unless the publisher resolves the metadata conflict.",
+    "commercialReuse": "Both stated licenses permit commercial reuse; preserve attribution and provenance.",
+    "requiresExplicitAcceptanceBeforeDownload": true
+  },
+  "readme": {
+    "url": "https://zenodo.org/api/records/18147026/files/README.md/content",
+    "bytes": 4031,
+    "md5": "7da4ca558f11d6b8f453a4db4962d58a",
+    "sha256": "abbffc23452ab91a1c1335e0eda9d373cdebe2f87b0aaecf99176a08d3e9499e"
+  },
+  "archive": {
+    "name": "Young.zip",
+    "url": "https://zenodo.org/api/records/18147026/files/Young.zip/content",
+    "bytes": 2559168858,
+    "md5": "e9b02228e6c4f4a3e63c181dd2cada91",
+    "note": "The range fetcher verifies the selected entry payloads. It records but cannot independently verify the whole-archive MD5 without downloading all 2.6 GB."
+  },
+  "entries": {
+    "image": {
+      "zipName": "Young_05/nifti/Young_05_image.nii.gz",
+      "localHeaderOffset": 1170594783,
+      "localHeaderBytes": 98,
+      "compressionMethod": 8,
+      "crc32": "43c88ef4",
+      "compressedBytes": 141936100,
+      "uncompressedBytes": 141900981,
+      "sha256": "18873d751917e113428b9e5b8a49084ceb2c6418636c2b22b684109555c70723",
+      "outputName": "Young_05_image.nii.gz"
+    },
+    "mask": {
+      "zipName": "Young_05/segmentation/Young_05_segmentation.nii.gz",
+      "localHeaderOffset": 1170429941,
+      "localHeaderBytes": 112,
+      "compressionMethod": 8,
+      "crc32": "1410e626",
+      "compressedBytes": 164523,
+      "uncompressedBytes": 757676,
+      "sha256": "aeb86208207bf45ad21a916031f97c1204b437444348cf5247597c24653418e5",
+      "outputName": "Young_05_segmentation.nii.gz"
+    }
+  },
+  "niftiExpected": {
+    "dimensions": [512, 512, 538],
+    "datatype": "signed-int16",
+    "spacingMm": [0.49023398756980896, 0.49023398756980896, 1.25],
+    "rescaleSlope": 1,
+    "rescaleInterceptHu": -1024,
+    "sformRas": [
+      [-0.49023398756980896, 0, 0, 121.00399780273438],
+      [0, 0.49023398756980896, 0, -125.00956726074219],
+      [0, 0, 1.25, -658.0980224609375]
+    ],
+    "maskVoxels": 956432,
+    "maskVoxelBounds": [177, 136, 190, 328, 365, 497],
+    "maskNonzeroSourceSlices": [190, 497],
+    "maskedHuMedian": 240
+  },
+  "derivedDicom": {
+    "transferSyntax": "1.2.840.10008.1.2.1",
+    "sopClass": "1.2.840.10008.5.1.4.1.1.2",
+    "photometricInterpretation": "MONOCHROME2",
+    "expectedFiles": 538,
+    "pixelRepresentation": "signed",
+    "bitsAllocated": 16,
+    "bitsStored": 16,
+    "rescaleSlope": 1,
+    "rescaleInterceptHu": -1024,
+    "patientAttributes": "Present with zero length only; no source identifiers are propagated.",
+    "dicomContentSha256": "62db825384883737f13ca039de225fa2b02263330de0e1329e7ad62c0afc59db",
+    "jpeg2000Lossless": {
+      "transferSyntax": "1.2.840.10008.1.2.4.90",
+      "encoder": "@cornerstonejs/codec-openjpeg 1.3.0 J2KEncoder",
+      "expectedBytes": 40176734,
+      "dicomContentSha256": "cd2edfde86f17d8d4b25883b1e42b362d1a30c6be4ec3c2fd602c594902e8180",
+      "basicOffsetTableEntries": [0],
+      "fragmentsPerFrame": 1,
+      "claimLimit": "Runtime throughput fixture only; the application decoder uses the same OpenJPEG family, so this is not independent-codec or scanner-vendor interoperability evidence."
+    }
+  }
+}

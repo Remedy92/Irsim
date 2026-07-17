@@ -3,7 +3,6 @@ import { Quaternion, Vector3 } from "three";
 import {
   CoaxialAssembly,
   CosseratRod,
-  GUIDEWIRE,
   GUIDEWIRE_DIRECT,
   SHEATH_DIRECT
 } from "../cosserat";
@@ -11,9 +10,8 @@ import { buildNormalAnatomy } from "../anatomy";
 import type { Anatomy } from "../types";
 
 /**
- * Phase-3 LIVE integration smoke tests: drive a real CosseratRod through its public step() with
- * params.useDirectSolve ON (dynamic co-rotational beam) and OFF (legacy XPBD), confirming the direct
- * path is wired, stable, and advances — and that turning the flag OFF leaves the legacy path intact.
+ * LIVE integration smoke tests: drive a real CosseratRod through its public step() on the dynamic
+ * co-rotational beam (the only lane after Phase H), confirming the path is wired, stable, and advances.
  * Calibrated navigation / substep-invariance / chirality gates come once precurve + Schur-contact land.
  */
 
@@ -45,20 +43,17 @@ function assertContained(label: string, rod: CosseratRod, epsCm = 0.05): void {
   expect(pen).toBeLessThanOrEqual(epsCm);
 }
 
-describe("Phase-3 live integration — direct solve path", () => {
-  it("exposes legacy inverse mass until direct mass is built, then normalized direct mass/inertia metrics", () => {
-    const legacy = new CosseratRod(tube(0.55, 26), "a", GUIDEWIRE);
-    expect(legacy.invMassAt(0)).toBe(0);
-    expect(legacy.invMassAt(5)).toBe(1);
-    expect(legacy.invInertiaAt(0)).toBe(0);
-    expect(legacy.invInertiaAt(5)).toBe(1);
-    expect(legacy.invMassAt(legacy.n)).toBe(0);
-    expect(legacy.invInertiaAt(legacy.n)).toBe(0);
-
+describe("live integration — direct solve path", () => {
+  it("exposes the unit kinematic inverse mass until direct mass is built, then normalized direct mass/inertia metrics", () => {
+    // Before ensureDirect() builds the dynamic beam mass, invMassAt/invInertiaAt fall back to the unit
+    // kinematic flag w[] (boundary node 0, free nodes 1) and out-of-range indices return 0.
     const wire = new CosseratRod(tube(0.55, 26), "a", GUIDEWIRE_DIRECT);
     expect(wire.invMassAt(0)).toBe(0);
     expect(wire.invMassAt(5)).toBe(1);
+    expect(wire.invInertiaAt(0)).toBe(0);
     expect(wire.invInertiaAt(5)).toBe(1);
+    expect(wire.invMassAt(wire.n)).toBe(0);
+    expect(wire.invInertiaAt(wire.n)).toBe(0);
 
     const dbg = wire as unknown as {
       ensureDirect: () => void;
@@ -116,21 +111,19 @@ describe("Phase-3 live integration — direct solve path", () => {
     for (const w of dbg.dOmega) expect(w.length()).toBeLessThan(1e-12);
   });
 
-  function climbRun(useDirectSolve: boolean): { climb: number; finite: boolean; n: number } {
-    const rod = new CosseratRod(tube(0.55, 26), "a", useDirectSolve ? GUIDEWIRE_DIRECT : GUIDEWIRE);
+  function climbRun(): { climb: number; finite: boolean; n: number } {
+    const rod = new CosseratRod(tube(0.55, 26), "a", GUIDEWIRE_DIRECT);
     const start = rod.tip().y; // ~ -2 + 8cm initial deploy
     rod.input = { deployed: 22, steer: 0.3, torque: 0 }; // feed +14cm of material
     for (let i = 0; i < 500; i++) rod.step(1 / 60);
     return { climb: rod.tip().y - start, finite: allFinite(rod), n: rod.n };
   }
 
-  it("flag-OFF and flag-ON both inject material and stay finite/stable (wired)", () => {
-    const off = climbRun(false);
-    const on = climbRun(true);
+  it("injects fed material and stays finite/stable (wired)", () => {
+    const on = climbRun();
     // eslint-disable-next-line no-console
-    console.log(`[direct-live] climb legacy=${off.climb.toFixed(2)}cm direct=${on.climb.toFixed(2)}cm n(direct)=${on.n}`);
-    expect(off.finite && on.finite).toBe(true);
-    expect(off.climb).toBeGreaterThan(8); // legacy baseline (kinematic advection rail ⇒ ~1:1)
+    console.log(`[direct-live] climb direct=${on.climb.toFixed(2)}cm n(direct)=${on.n}`);
+    expect(on.finite).toBe(true);
     expect(on.n).toBeGreaterThan(20); // the direct path injected the fed material (frozen-h, coarser)
     // NOTE: this is the ADVERSARIAL straight-tube OVER-FEED case. With real EI the stiff column buckles
     // under the kinematic advection feed in an unconstrained straight tube (worse at coarse h), so the
@@ -139,7 +132,7 @@ describe("Phase-3 live integration — direct solve path", () => {
     // SUBSTEP-INVARIANCE nav gate) and telescoping works (see the coax test) — those are the real cases.
   }, 60000);
 
-  it("flag-ON: stays bounded inside the tube (no tunneling / blowup) over a long run", () => {
+  it("stays bounded inside the tube (no tunneling / blowup) over a long run", () => {
     const rod = new CosseratRod(tube(0.55, 18), "a", GUIDEWIRE_DIRECT);
     rod.input = { deployed: 14, steer: 0.3, torque: 0 };
     for (let i = 0; i < 600; i++) rod.step(1 / 60);

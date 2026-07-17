@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ANATOMY_VARIANTS, buildAnatomy } from "./sim/anatomy";
 import { compileAnatomy } from "./sim/anatomyDoc";
 import { GUIDEWIRE_PROFILE_IDS, GUIDEWIRE_PROFILES } from "./sim/cosserat";
 import { parseAnatomyInput } from "./sim/anatomy-loader";
 import { keyHints, resolveAction } from "./sim/controls";
 import { useSim } from "./sim/store";
+import { DicomImportDialog } from "./imaging/DicomImportDialog";
+import type { LocalDicomResult, LocalDicomSummary } from "./imaging/types";
 import { Viewport } from "./three/Viewport";
 import "./styles.css";
 
@@ -239,6 +241,7 @@ export function App() {
     setAccess,
     setVariant,
     loadDoc,
+    closeLocalCase,
     setDeviceProfile,
     select,
     setLayout,
@@ -256,6 +259,18 @@ export function App() {
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(true);
+  const [dicomOpen, setDicomOpen] = useState(false);
+  const [localSummary, setLocalSummary] = useState<LocalDicomSummary | null>(null);
+  const closeDicomDialog = useCallback(() => setDicomOpen(false), []);
+  const loadReviewedDicom = useCallback(
+    (result: LocalDicomResult) => {
+      if (!result.doc) return;
+      loadDoc(result.doc);
+      setLocalSummary(result.summary);
+      setLoadError(null);
+    },
+    [loadDoc]
+  );
 
   // Load anatomy (.json) the operator drops in — the manual stand-in for the DICOM→centerline
   // ingestion pipeline output. Accepts either a compiled AnatomyDoc sidecar OR raw VMTK-style
@@ -277,6 +292,7 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return; // never hijack browser chords
+      if (document.querySelector('[aria-modal="true"]')) return; // modal owns the keyboard while open
       const t = e.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;
       const st = useSim.getState();
@@ -303,10 +319,27 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Prevent the browser back/forward cache from restoring patient-derived in-memory geometry.
+  useEffect(() => {
+    const clearSession = () => {
+      if (useSim.getState().loadedDoc) useSim.getState().closeLocalCase();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) clearSession();
+    };
+    window.addEventListener("pagehide", clearSession);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", clearSession);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, []);
+
   const target = anatomy.targets.find((x) => x.id === targetId) ?? anatomy.targets[0];
-  const accessShort = accessId === "lcfa" ? "L femoral" : "R femoral";
+  const selectedAccess = anatomy.access.find((a) => a.id === accessId) ?? anatomy.access[0];
+  const accessShort = selectedAccess.name;
   // Path efficiency = straight-line access→target chord ÷ wire length used (1 = perfectly direct).
-  const accessPos = (anatomy.access.find((a) => a.id === accessId) ?? anatomy.access[0]).pos;
+  const accessPos = selectedAccess.pos;
   const pathEfficiency = metrics.depth > 0 ? Math.min(1, accessPos.distanceTo(target.pos) / metrics.depth) : 0;
   const hints = keyHints(layout);
   const isFluoro = view === "fluoro";
@@ -322,6 +355,7 @@ export function App() {
   const selectedName = selected === "wire" ? "Guidewire" : "Sheath";
 
   return (
+    <>
     <main className="shell">
       <header className="topbar">
         <div className="brand">
@@ -343,7 +377,9 @@ export function App() {
           </div>
         </div>
         <div className="disclaimer">
-          Educational rehearsal on generic anatomy. Simulated, relative metrics. Not a medical device.
+          {loadedDoc
+            ? "LOCAL CASE · IN MEMORY ONLY · NOT UPLOADED · PROTOTYPE REHEARSAL"
+            : "Educational rehearsal on generic anatomy. Simulated, relative metrics. Not a medical device."}
         </div>
       </header>
 
@@ -449,7 +485,11 @@ export function App() {
           <Slider label="Tip tightness" min={0} max={1} step={0.01} value={dev.steer} disabled={selected === "sheath"} onChange={(v) => setSteer(selected, v)} />
 
           {/* ---- Setup (collapsible) ---- */}
-          <button className={`disclosure${setupOpen ? " open" : ""}`} onClick={() => setSetupOpen((o) => !o)}>
+          <button
+            className={`disclosure${setupOpen ? " open" : ""}`}
+            aria-expanded={setupOpen}
+            onClick={() => setSetupOpen((o) => !o)}
+          >
             <span>Setup</span>
             <small>
               {accessShort} · {anatomy.name.replace(/\s*\(.*\)\s*$/, "")}
@@ -458,14 +498,18 @@ export function App() {
           {setupOpen ? (
             <div className="disclosure-body">
               <label className="field">
-                <span>Access · start side</span>
-                <div className="seg">
-                  <button className={accessId === "rcfa" ? "on" : ""} onClick={() => setAccess("rcfa")}>
-                    Right
-                  </button>
-                  <button className={accessId === "lcfa" ? "on" : ""} onClick={() => setAccess("lcfa")}>
-                    Left
-                  </button>
+                <span>Access · start site</span>
+                <div className="seg access-options">
+                  {anatomy.access.map((access) => (
+                    <button
+                      key={access.id}
+                      className={accessId === access.id ? "on" : ""}
+                      aria-pressed={accessId === access.id}
+                      onClick={() => setAccess(access.id)}
+                    >
+                      {access.name}
+                    </button>
+                  ))}
                 </div>
               </label>
               <label className="field">
@@ -483,17 +527,53 @@ export function App() {
                   {loadedDoc ? <option value="loaded">Loaded · {loadedDoc.name}</option> : null}
                 </select>
               </label>
-              <label className="loadrow">
-                <span>Load sidecar (.json)</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  onChange={(e) => {
-                    void onLoadSidecar(e.target.files?.[0]);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
+              <div className="source-card">
+                <span>Anatomy source</span>
+                {loadedDoc ? (
+                  <>
+                    <b>Local case · session only</b>
+                    {localSummary ? (
+                      <small>
+                        {localSummary.selectedSliceCount} CT slices · {localSummary.confidence} extraction confidence
+                      </small>
+                    ) : (
+                      <small>Advanced local anatomy document</small>
+                    )}
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        closeLocalCase();
+                        setLocalSummary(null);
+                      }}
+                    >
+                      Close case & clear session
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <b>Built-in public demo</b>
+                    <small>Always available · no files required</small>
+                    <button className="primary" onClick={() => setDicomOpen(true)}>
+                      Import local DICOM CT
+                    </button>
+                  </>
+                )}
+              </div>
+              <details className="advanced-import">
+                <summary>Advanced anatomy JSON</summary>
+                <label className="loadrow">
+                  <span>Load sidecar (.json)</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={(e) => {
+                      void onLoadSidecar(e.target.files?.[0]);
+                      setLocalSummary(null);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </details>
               {loadError ? <p className="hint err">Could not load anatomy: {loadError}</p> : null}
               <label className="field">
                 <span>Keyboard layout</span>
@@ -679,5 +759,11 @@ export function App() {
         <p className="deck-hint">Drag to angle the C-arm · shift-drag to pan · scroll to zoom (SID)</p>
       </footer>
     </main>
+    <DicomImportDialog
+      open={dicomOpen}
+      onClose={closeDicomDialog}
+      onLoad={loadReviewedDicom}
+    />
+    </>
   );
 }

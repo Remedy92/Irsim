@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "aortaseg60-v1.1-young-05-derived-dicom",
+  "description": "Deterministic identifier-neutral Explicit VR Little Endian DICOM derivation of the pinned AortaSeg-60 Young_05 arterial CTA. The automatic mask and current tracker are engineering references, not clinical ground truth.",
+  "sourceManifest": "fixtures/real-dicom/aortaseg60-young05-source.json",
+  "license": {
+    "effectiveFixturePolicy": "Apply CC BY 4.0 attribution because the included dataset README is stricter than the CC0 Zenodo record metadata.",
+    "sourceRecord": "https://zenodo.org/records/18147026"
+  },
+  "download": {
+    "expectedDicomFiles": 538,
+    "dicomContentFingerprintAlgorithm": "SHA-256 of the newline-delimited, lexicographically filename-sorted per-file SHA-256 hex digests",
+    "dicomContentSha256": "62db825384883737f13ca039de225fa2b02263330de0e1329e7ad62c0afc59db",
+    "jpeg2000Lossless": {
+      "transferSyntax": "1.2.840.10008.1.2.4.90",
+      "encoder": "@cornerstonejs/codec-openjpeg 1.3.0 J2KEncoder",
+      "expectedBytes": 40176734,
+      "dicomContentSha256": "cd2edfde86f17d8d4b25883b1e42b362d1a30c6be4ec3c2fd602c594902e8180",
+      "claimLimit": "Same-OpenJPEG-family full-study runtime evidence only; not independent-codec, scanner-vendor, or clinical evidence."
+    }
+  },
+  "expected": {
+    "dimensions": [512, 512, 538],
+    "displaySpacingText": "0.49 × 0.49 × 1.25 mm",
+    "fullStudyProductionIntakeBudget": {
+      "scope": "Broad non-flaky engineering ceiling for sequential production-path intake plus the automatic proposal on the 538-slice native Explicit VR Little Endian derived study. This is not a compressed-series benchmark, service-level objective, or clinical performance claim.",
+      "expectedCanonicalScalarBytes": 282066944,
+      "maximumSingleSourceBytes": 526000,
+      "maximumWallTimeMs": 30000,
+      "maximumPeakRssDeltaBytes": 671088640,
+      "maximumPeakArrayBufferDeltaBytes": 469762048,
+      "requiresSequentialReadAndPriorBufferClearing": true
+    },
+    "proposalOverlay": {
+      "sliceNumber": 163,
+      "anatomicalExpectation": "A compact bright tubular component in the lower abdomen. It is outside the automated aorta mask's published source-slice extent and is retained only as a deterministic proposal regression observation.",
+      "cyanPixelCount": [430, 580],
+      "cyanBounds": {
+        "minColumn": [289, 295],
+        "maxColumn": [318, 324],
+        "minRow": [215, 221],
+        "maxRow": [240, 246]
+      }
+    },
+    "seededTrack": {
+      "seed": {
+        "sliceNumber": 301,
+        "row": 284,
+        "column": 291
+      },
+      "reference": "Centroid of the AortaSeg-60 automated aorta mask on source k=300 after the documented DICOM row flip.",
+      "referenceMaskIsExpertCorrected": false,
+      "sourceMaskMedianHu": 233,
+      "minimumCenterlineSamples": 300,
+      "maximumCenterlineSamples": 350,
+      "minimumCoveragePercent": 55,
+      "maximumCoveragePercent": 65,
+      "referenceMaskAcceptance": {
+        "scope": "Engineering regression only on source slices where both the seeded track and uncorrected TotalSegmentator aorta mask exist. It does not validate the tracked path below source slice 190, the omitted superior aorta above source slice 325, whole-aorta completeness, branch identity, pathology, or clinical suitability.",
+        "minimumReferenceSliceCoveragePercent": 40,
+        "minimumTrackedSliceReferenceRecall": 0.85,
+        "minimumTrackedSliceDice": 0.85,
+        "minimumLabelmapPrecisionInReferenceSliceRange": 0.84,
+        "minimumCenterlineInsideMaskInReferenceSliceRangePercent": 95
+      },
+      "requiresPassingSingleTrunkTopology": true,
+      "requiresCheckpointReview": true,
+      "requiresSeparateAttestation": true
+    }
+  }
+}

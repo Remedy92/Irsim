@@ -5,6 +5,7 @@ import {
   docFromJSON,
   docToJSON,
   validateAnatomyDoc,
+  validateSimulatorReadyAnatomyDoc,
   type AnatomyDoc
 } from "./anatomyDoc";
 import { ANATOMY_VARIANTS, buildAnatomy, buildNormalAnatomy, NORMAL_DOC } from "./anatomy";
@@ -88,6 +89,21 @@ describe("anatomyDoc — validation rejects malformed documents", () => {
     const d = base();
     d.targets[0].via = "ghost";
     expect(() => validateAnatomyDoc(d)).toThrow(/unknown branch/);
+  });
+
+  it("blocks activation when access or targets are empty", () => {
+    const noAccess = base();
+    noAccess.access = [];
+    expect(() => validateSimulatorReadyAnatomyDoc(noAccess)).toThrow(/at least one access site/);
+    const noTarget = base();
+    noTarget.targets = [];
+    expect(() => validateSimulatorReadyAnatomyDoc(noTarget)).toThrow(/at least one target/);
+  });
+
+  it("blocks non-finite external geometry", () => {
+    const d = base();
+    d.branches[0].controls[0].p[0] = Number.NaN;
+    expect(() => validateSimulatorReadyAnatomyDoc(d)).toThrow(/non-finite/);
   });
 });
 

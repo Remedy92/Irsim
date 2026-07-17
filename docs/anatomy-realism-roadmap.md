@@ -1,4 +1,21 @@
 # IRsim Anatomy Realism & Vessel-Coverage Roadmap
+
+> **STATUS BANNER (updated 2026-06-16) — read before trusting the body.** This roadmap's founding
+> premise and its Phase 0/1/2 recommendations are now **shipped**, so the body over-states what is
+> missing. Already done in committed code: `NORMAL_DOC` is a **25-branch** declarative `AnatomyDoc`
+> (aortoiliac + arch great vessels + asymmetric renals + full visceral/mesenteric tree + pelvic UFE
+> path), **not** the 8-branch placeholder the body describes; the visceral/mesenteric core, per-branch
+> contrast bolus propagation, DSA/roadmap/bone-background fluoro, the centerline/sidecar ingestion
+> bridge (`anatomy-loader.ts` with the ostium weld), pathology + variant scenarios, and a synthetic
+> Murray's-law distal-tree generator all ship. The **still-governing, not-started** material is:
+> **§3d** (venous / right-heart subsystem), **§4c–e** (carina contact-path, off-axis lumen, tortuosity
+> descriptor — the last gated on the chirality fix / Workstream X), **§6** (license verdicts — but see
+> `dicom-anatomy-pipeline.md`, which supersedes §6b and corrects three license claims), and **§8**
+> (small-caliber contact-clamp). Remaining open work = anatomy **Phases 3–5** (venous, off-axis,
+> small-caliber); the morphometry-calibration slice (aortic-bifurcation / renal-asymmetry) feeds the
+> physics refactor's Workstream AC. Treat line-number code claims below as **as-of-2026-06-05** and
+> re-verify against current source.
+
 ### A decision-grade plan to make IRsim's anatomy clinically faithful and grow it to real IR breadth
 
 *Prepared for the IRsim owner. Clinical numbers and license verdicts are sourced from the research bundle; where a license or a measurement is unconfirmed, it is flagged. Every code claim below was verified against the current source (`src/sim/types.ts`, `anatomy.ts`, `lumen.ts`, `cosserat.ts`, `src/three/Viewport.tsx`, `fluoro.ts`) — line numbers are cited so the owner can check them. Shipped-asset recommendations respect the hard constraint that anything baked into the MIT repo must be permissive/public-domain and redistributable.*

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AnatomyDoc } from "./anatomyDoc";
+import { validateSimulatorReadyAnatomyDoc, type AnatomyDoc } from "./anatomyDoc";
 import type { GuidewireProfileId } from "./cosserat";
 import type { DeviceId, KeyLayout } from "./controls";
 
@@ -110,6 +110,8 @@ interface SimState {
   setVariant: (variantId: string | undefined) => void;
   /** Load an external anatomy sidecar (supersedes the variant), or null to clear it. */
   loadDoc: (doc: AnatomyDoc | null) => void;
+  /** Close an in-memory local case and return to the built-in public demo. */
+  closeLocalCase: () => void;
   /** Select the guidewire stiffness profile; rebuilds the wire and restarts the run. */
   setDeviceProfile: (id: GuidewireProfileId) => void;
   select: (device: DeviceId) => void;
@@ -198,7 +200,52 @@ export const useSim = create<SimState>((set) => ({
     set((s) => ({ variantId, loadedDoc: null, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
 
   loadDoc: (loadedDoc) =>
-    set((s) => ({ loadedDoc, variantId: undefined, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),
+    set((s) => {
+      if (!loadedDoc) {
+        return {
+          loadedDoc: null,
+          variantId: undefined,
+          accessId: DEFAULTS.accessId,
+          targetId: DEFAULTS.targetId,
+          runSeq: s.runSeq + 1,
+          ...freshDevices(),
+          injectSeq: 0,
+          metrics: freshMetrics(),
+          labels: [],
+          measurePts: [],
+          measureCm: 0
+        };
+      }
+      const ready = validateSimulatorReadyAnatomyDoc(loadedDoc);
+      return {
+        loadedDoc: ready,
+        variantId: undefined,
+        accessId: ready.access[0].id,
+        targetId: ready.targets[0].id,
+        runSeq: s.runSeq + 1,
+        ...freshDevices(),
+        injectSeq: 0,
+        metrics: freshMetrics(),
+        labels: [],
+        measurePts: [],
+        measureCm: 0
+      };
+    }),
+
+  closeLocalCase: () =>
+    set((s) => ({
+      loadedDoc: null,
+      variantId: undefined,
+      accessId: DEFAULTS.accessId,
+      targetId: DEFAULTS.targetId,
+      runSeq: s.runSeq + 1,
+      ...freshDevices(),
+      injectSeq: 0,
+      metrics: freshMetrics(),
+      labels: [],
+      measurePts: [],
+      measureCm: 0
+    })),
 
   setDeviceProfile: (deviceProfile) =>
     set((s) => ({ deviceProfile, runSeq: s.runSeq + 1, ...freshDevices(), injectSeq: 0, metrics: freshMetrics() })),

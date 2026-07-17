@@ -1,5 +1,10 @@
 # DICOM → AnatomyDoc Pipeline — Offline Data & License-Clean Asset Strategy
 
+> **Historical offline asset strategy.** The live local/session-only browser architecture and
+> implementation status are now maintained in `docs/ARCHITECTURE.md`. This document remains useful
+> for redistributable training-asset licensing; its “never in the browser” runtime decision is
+> superseded.
+
 ### A decision-grade design for ingesting real-patient CTA geometry into IRsim's `AnatomyDoc` sidecar
 
 *Prepared for the IRsim owner. This doc specifies the OFFLINE pipeline (run on a workstation, never in the browser) that turns a contrast CTA into the JSON sidecar `anatomyDoc.ts` compiles. It does NOT specify runtime TypeScript — the loader/converter is built separately. Every license verdict that carries a SHIP recommendation was verified against the upstream license file or standard in June 2026; citations are inline. This builds on `docs/anatomy-realism-roadmap.md` §6 (Data & Asset Strategy) and §7 (engine/data-model), and corrects three of its license claims where the upstream source disagreed (OpenCCO license, VascuSynth license, and the "outputs user-owned" inference — see §5).*
@@ -218,7 +223,7 @@ Refines roadmap §6a. **Standard applied strictly: NC, SA, ARR, GPL/copyleft con
 | **TotalSegmentator default `total`/`total_mr` masks** | processing output | **Apache-2.0** tool; mask inherits *input CTA* license | **SHIP ONLY IF input CTA is SHIP-able** (verify input) | Aortoiliac + arch backbone |
 | **VMTK centerlines** | processing output | **BSD** tool ([license](http://www.vmtk.org/license.html)); output inherits input license | **SHIP ONLY IF input is SHIP-able** | Centerline+radius extraction |
 | **ARCADE** | 2D coronary X-ray | CC0 1.0 (dataset; CC-BY is the article only) | **SHIP** (limited relevance — 2D fluoro annotation only) | Fluoro-annotation reference |
-| **AortaSeg-60** | 3D aorta+branch seg | **CONFLICTED record** — Zenodo tag CC0 vs README/paper CC BY 4.0 | **BLOCKED until authors resolve in writing** | Morphometry calibration only (measurements, not geometry) |
+| **AortaSeg-60** | 3D aorta seg | **CONFLICTED record** — Zenodo tag CC0 vs included README CC BY 4.0 | **BLOCKED as a baked/redistributed asset until authors resolve in writing** | Opt-in, non-redistributed engineering fixture may apply stricter CC BY 4.0 terms; automated mask is not a reference standard |
 | **TCIA collection (any)** | real CTA | **per-collection**; most NOT CC0/CC-BY | **REFERENCE-ONLY until the specific collection is confirmed CC BY 3.0/4.0 or CC0 in writing** | Whitelisted-collection sourcing only after written confirmation |
 | **Visible Human** | cadaver imaging | NLM custom Terms (unconfirmed for redistribution) | **REFERENCE/TRACING-ONLY until Terms confirmed in writing** | Attribute "Courtesy U.S. NLM" |
 | **SynthAorta** | synthetic aorta dataset | **GPL-3.0 dataset** (CC-BY is paper only) | **BLOCKED** (copyleft contaminates MIT) | Reference only |

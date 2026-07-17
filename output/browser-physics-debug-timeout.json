@@ -1,16 +1,32 @@
 {
-  "url": "http://localhost:5179/",
+  "url": "http://127.0.0.1:5179/",
   "diagnostics": {
     "page": {
-      "href": "chrome-error://chromewebdata/",
+      "href": "http://127.0.0.1:5179/",
       "readyState": "complete",
-      "title": "localhost",
-      "bodyText": "This site can’t be reached\n\nlocalhost refused to connect.\n\nTry:\n\nChecking the connection\nChecking the proxy and the firewall\nERR_CONNECTION_REFUSED\nReload\nDetails",
-      "hasCanvas": false,
+      "title": "IRsim — Interventional Radiology Navigation Trainer",
+      "bodyText": "IRsim\nNAVIGATION TRAINER\nANATOMY\nNormal arterial anatomy\nACCESS\nRight common femoral artery\nMODE\nFluoro · Live\nEDUCATIONAL REHEARSAL ON GENERIC ANATOMY. SIMULATED, RELATIVE METRICS. NOT A MEDICAL DEVICE.\nVIEW\n3D\nFluoro\nLive\nDSA\nRoadmap\nTARGET VESSEL\nLeft renal ostium\nRight renal ostium\nLeft common carotid ostium\nBrachiocephalic ostium\nCeliac trunk ostium\nSuperior mesenteric ostium\nInferior mesenteric ostium\nCommon hepatic artery\nSplenic artery\nRight hepatic (selective)\nRight uterine artery\nLeft uterine artery\nRight internal iliac ostium\nLeft internal iliac ostium\nC-ARM\nRAO / LAO\nRAO 0°\n−\n+\nCRANIAL / CAUDAL\nCRAN 0°\n−\n+\nIMAGE\nBRIGHTNESS\n+0.00\nCONTRAST (WINDOW)\n1.00×\nVESSEL LABELS\nOn\nOff\nCALIPER\nMeasure\nOff\nINSTRUMENT\nWIRE TYPE · 12 N·CM² EI\nStandard\nStiff\nSoft\nGuidewire\nSheath\nGUIDEWIRE DEPLOYED\n8.0 CM\nGUIDEWIRE ROTATION\n0°\nTIP TIGHTNESS\n0.35\nSETUP\nRight common femoral artery · Normal arterial anatomy\nACCESS · START SITE\nRight common femoral artery\nLeft common femoral artery\nSCENARIO · ANATOMY\nNormal anatomy\nBovine arch (common origin of LCC)\nReplaced right hepatic from SMA (Michels III)\nInfrarenal abdominal aortic aneurysm\nOstial left renal artery stenosis\nAccessory right renal artery (lower pole)\nTortuous right common iliac\nLeft lower-extremity runoff (SFA → popliteal → tibials)\nSynthetic right-hepatic segmental tree (procedural)\nANATOMY SOURCE\nBuilt-in public demo\nAlways available · no files required\nImport local DICOM CT\nADVANCED ANATOMY JSON\nKEYBOARD LAYOUT\nQWERTY\nAZERTY\nL renal\nL common carotid\nCeliac trunk\nSup mesenteric\nInf mesenteric\nR hepatic\nR uterine\nR internal iliac\nLIVE · RAO 0° / CRAN 0°\nSID 95 CM · 1.05×\nDAP 79.1 · FL 0:29\nWIRE DEPTH\n8.0cm\nTIP → TARGET\n17.3cm\nNAVIGATING\nCONTRAST\n0%\nIDLE\nPROCEDURE\n0:29\nFLUORO TIME\n0:29\nDOSE (DAP)\n79.1\nAPPROACH\n17.3cm\nNavigating\nacceptance 0.6 cm\nACTIVE TARGET\nLeft renal ostium\nvia renal_l\nCONSOLE\nView\nF\nInject\nC\nReset\nR\nWIRE\nFEED\nW\nS\nTORQUE\nA\nD\nSHEATH\nFEED\n↑\n↓\nTORQUE\n←\n→\n\nDrag to angle the C-arm · shift-drag to pan · sc",
+      "hasCanvas": true,
       "hasDebugApi": false,
       "hasSnapshot": false,
-      "scriptSources": []
+      "scriptSources": [
+        "http://127.0.0.1:5179/assets/index-CZXu8EEt.js"
+      ]
     },
-    "events": []
+    "events": [
+      {
+        "method": "Log.entryAdded",
+        "params": {
+          "entry": {
+            "source": "network",
+            "level": "error",
+            "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "timestamp": 1784316890171.369,
+            "url": "http://127.0.0.1:5179/favicon.ico",
+            "networkRequestId": "37136.11"
+          }
+        }
+      }
+    ]
   }
 }

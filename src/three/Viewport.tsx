@@ -32,6 +32,7 @@ import { CoaxialAssembly, CosseratRod, guidewireForProfile, SHIPPED_SHEATH } fro
 import type { DeviceId } from "../sim/store";
 import { useSim } from "../sim/store";
 import { makeAttenuationMaterial, makeTonemapMaterial } from "./fluoro";
+import { makeVesselGeometry } from "./vesselGeometry";
 
 const ISO = new Vector3(0, 14, 0);
 const DEBUG_HISTORY_LIMIT = 900;
@@ -40,6 +41,18 @@ const DEBUG_HISTORY_LIMIT = 900;
 const BOLUS_FRONT_SPEED = 46;
 /** Steady opacification floor for roadmap mode (the held vessel map under the live instruments). */
 const ROADMAP_FILL = 0.5;
+/**
+ * Cosmetic fluoro pulsatility (render-only, always on in the fluoro view). The vessel attenuation is
+ * scaled by a faint sinusoid so the opacified tree pulses with the arterial cycle. Pure tone-map-pass
+ * visual: it never touches physics and never affects the 3D lit view (which ignores uSigma). Amplitude
+ * ≈3% of the vessel scale; frequency ≈1.2 Hz ≈ 72 bpm. Driven off the existing render clock — no
+ * Date.now()/performance.now(), no per-frame allocation.
+ */
+const PULSATILITY_AMPLITUDE = 0.03;
+const PULSATILITY_HZ = 1.2; // 1.2 cycles/s ≈ 72 beats/min
+/** Deterministic physics cadence; rendering may run faster or slower without changing the solve. */
+const PHYSICS_TIMESTEP_SECONDS = 1 / 60;
+const MAX_PHYSICS_STEPS_PER_FRAME = 2;
 type PhysicsMode = "direct";
 type MeshKind = "vessel" | "bone" | "wire" | "sheath";
 
@@ -60,11 +73,18 @@ interface RodDebug {
   tipSpeed: number;
   maxWallPenetration: number;
   maxSegmentLengthError: number;
+  maxSegmentLengthErrorIndex: number;
+  maxSegmentLength: number;
+  maxSegmentRestLength: number;
+  maxSegmentEndpointPositions: [[number, number, number], [number, number, number]] | null;
+  maxSegmentEndpointOwners: [{ edge: number; branch: string }, { edge: number; branch: string }] | null;
   finite: boolean;
 }
 
 interface SimDebugSnapshot {
   frame: number;
+  /** Cumulative fixed 60 Hz physics steps since this assembly was created. */
+  physicsStep: number;
   time: number;
   dt: number;
   physicsMode: PhysicsMode;
@@ -90,7 +110,10 @@ interface SimDebugSnapshot {
     activeContacts: number;
     normalLoad: number;
     innerExitPastOuterTip: number;
-    maxCoveredInnerRho: number;
+    maxCoveredPerpRho: number;
+    maxCoveredTrueDistance: number;
+    maxUncontainedWallPenetration: number;
+    divergedNodeCount: number;
     innerClearance: number;
   };
   /**
@@ -159,17 +182,47 @@ function allFiniteRod(rod: CosseratRod): boolean {
   return true;
 }
 
-function maxSegmentLengthError(rod: CosseratRod): number {
-  let max = 0;
+function segmentLengthDiagnostic(rod: CosseratRod): {
+  error: number;
+  index: number;
+  length: number;
+  restLength: number;
+} {
+  let error = 0;
+  let index = -1;
+  let length = 0;
+  let restLength = 0;
   for (let i = 0; i < rod.restLen.length; i++) {
-    max = Math.max(max, Math.abs(rod.x[i + 1].distanceTo(rod.x[i]) - rod.restLen[i]));
+    const currentLength = rod.x[i + 1].distanceTo(rod.x[i]);
+    const currentError = Math.abs(currentLength - rod.restLen[i]);
+    if (currentError > error) {
+      error = currentError;
+      index = i;
+      length = currentLength;
+      restLength = rod.restLen[i];
+    }
   }
-  return max;
+  return { error, index, length, restLength };
 }
 
 function rodDebug(rod: CosseratRod, commanded: number, prevTip: Vector3, dt: number): RodDebug {
   const tip = rod.tip();
   const speed = dt > 0 ? tip.distanceTo(prevTip) / dt : 0;
+  const segment = segmentLengthDiagnostic(rod);
+  const segmentEndpoints =
+    segment.index >= 0 && segment.index + 1 < rod.x.length
+      ? ([tuple(rod.x[segment.index]), tuple(rod.x[segment.index + 1])] as [
+          [number, number, number],
+          [number, number, number]
+        ])
+      : null;
+  const segmentOwners =
+    segment.index >= 0
+      ? ([rod.lumenOwnershipAtNode(segment.index), rod.lumenOwnershipAtNode(segment.index + 1)] as [
+          { edge: number; branch: string },
+          { edge: number; branch: string }
+        ])
+      : null;
   prevTip.copy(tip);
   return {
     nodes: rod.n,
@@ -178,7 +231,12 @@ function rodDebug(rod: CosseratRod, commanded: number, prevTip: Vector3, dt: num
     tip: tuple(tip),
     tipSpeed: speed,
     maxWallPenetration: rod.maxWallPenetration(),
-    maxSegmentLengthError: maxSegmentLengthError(rod),
+    maxSegmentLengthError: segment.error,
+    maxSegmentLengthErrorIndex: segment.index,
+    maxSegmentLength: segment.length,
+    maxSegmentRestLength: segment.restLength,
+    maxSegmentEndpointPositions: segmentEndpoints,
+    maxSegmentEndpointOwners: segmentOwners,
     finite: allFiniteRod(rod)
   };
 }
@@ -318,9 +376,7 @@ function Engine() {
     addBones(scene, meshes);
 
     anatomy.branches.forEach((br, bi) => {
-      const meanR = br.points.reduce((a, p) => a + p.radius, 0) / br.points.length;
-      const curve = new CatmullRomCurve3(br.points.map((p) => p.pos));
-      const geo = new TubeGeometry(curve, br.points.length * 2, meanR, 14, false);
+      const geo = makeVesselGeometry(br.points, 14);
       const fluoro = makeAttenuationMaterial(0);
       // vessel wall: translucent steel-grey (monochrome) rather than anatomical red.
       const mat3d = new MeshStandardMaterial({
@@ -403,6 +459,33 @@ function Engine() {
     return { scene, camera, meshes, sheath, wire, sheathRing, target, rt, rtBase, tonemap, postScene, postCam, branchC };
   }, [anatomy]);
 
+  // Anatomy switching is also the local-case privacy clear path: release every CPU/GPU object owned
+  // by the old rig so patient-derived geometry cannot remain reachable through Three.js caches.
+  useEffect(() => {
+    return () => {
+      const geometries = new Set<BufferGeometry>();
+      const materials = new Set<Material>();
+      const collect = (mesh: Mesh) => {
+        geometries.add(mesh.geometry);
+        const assigned = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        assigned.forEach((material) => materials.add(material));
+        const data = mesh.userData as Partial<MeshMaterials>;
+        if (data.mat3d) materials.add(data.mat3d);
+        if (data.fluoro) materials.add(data.fluoro);
+      };
+      rig.scene.traverse((object) => {
+        if (object instanceof Mesh) collect(object);
+      });
+      rig.postScene.traverse((object) => {
+        if (object instanceof Mesh) collect(object);
+      });
+      geometries.forEach((geometry) => geometry.dispose());
+      materials.forEach((material) => material.dispose());
+      rig.rt.dispose();
+      rig.rtBase.dispose();
+    };
+  }, [rig]);
+
   const dist = useRef(95);
   const lastSeq = useRef(0);
   const injectClock = useRef(Infinity); // s since the last injection; Infinity = no active bolus
@@ -421,8 +504,10 @@ function Engine() {
   const doseAcc = useRef(0); // accumulated DAP-like dose
   const reachedFor = useRef(0);
   const clock = useRef(0);
+  const physicsAccumulator = useRef(0);
   const reportAt = useRef(0);
   const frame = useRef(0);
+  const physicsStep = useRef(0);
   // Phase F: last-frame step wall time (ms) + deterministic FEM work-counts for that frame.
   const stepMs = useRef(0);
   const stepCounts = useRef<{ tangentAssemblies: number; elementForceEvals: number }>({
@@ -436,6 +521,7 @@ function Engine() {
 
   useEffect(() => {
     clock.current = 0;
+    physicsAccumulator.current = 0;
     reportAt.current = 0;
     reachedFor.current = 0;
     injectClock.current = Infinity;
@@ -444,6 +530,7 @@ function Engine() {
     fluoroClock.current = 0;
     doseAcc.current = 0;
     frame.current = 0;
+    physicsStep.current = 0;
     stepMs.current = 0;
     stepCounts.current = { tangentAssemblies: 0, elementForceEvals: 0 };
     debugHistory.current.length = 0;
@@ -453,7 +540,7 @@ function Engine() {
   }, [assembly]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!import.meta.env.DEV || typeof window === "undefined") return;
     const api: SimDebugApi = {
       getSnapshot: () => debugSnapshot.current,
       getHistory: () => debugHistory.current.slice(),
@@ -543,12 +630,16 @@ function Engine() {
 
   useFrame((_, delta) => {
     const s = useSim.getState();
-    // R3F can deliver delta = 0 (the first frame, a tab refocus, or two rAFs inside one ms).
-    // A non-positive/non-finite step makes the XPBD compliance α̃ = α/Δt_s² blow up to
-    // Infinity → NaN and permanently corrupts the rod. Treat it as "no time elapsed": clamp
-    // the upper end for stability and skip the physics step (we still render the valid state).
-    const h = Number.isFinite(delta) && delta > 0 ? Math.min(delta, 1 / 30) : 0;
-    clock.current += h;
+    // R3F follows the display refresh rate, while the calibrated beam must not. Accumulate bounded
+    // real time and advance only in fixed 60 Hz quanta; this keeps 60/120/144 Hz displays and browser
+    // scheduling jitter on the same reproducible physics trajectory. At most two steps catch up after
+    // a slow frame, matching the existing 1/30 s elapsed-time clamp and avoiding a resume spiral.
+    const renderDt = Number.isFinite(delta) && delta > 0 ? Math.min(delta, 1 / 30) : 0;
+    clock.current += renderDt;
+    physicsAccumulator.current = Math.min(
+      physicsAccumulator.current + renderDt,
+      PHYSICS_TIMESTEP_SECONDS * MAX_PHYSICS_STEPS_PER_FRAME
+    );
 
     // input -> physics. The wire and sheath are driven INDEPENDENTLY from their own store inputs
     // through each rod's velocity-controlled insertion BC (deployed → feed velocity target,
@@ -565,17 +656,28 @@ function Engine() {
     outer.input.deployed = s.sheath.deployed;
     outer.input.steer = 0;
     outer.input.torque = s.sheath.torque;
-    // Phase F: time the elastic+contact step (reported, not gated). Reset the deterministic FEM
-    // work-counts immediately before so the post-step read reflects exactly this frame's tangent
-    // assemblies / element-force evals (the HARD CI gate lives in integration_live.test.ts). Two
-    // performance.now() calls/frame is negligible overhead and only runs when time elapsed (h > 0).
-    if (h > 0) {
+    // Phase F: time all fixed physics steps performed by this render frame (reported, not gated).
+    // The deterministic work-count remains the hard CI gate in integration_live.test.ts.
+    let physicsSteps = 0;
+    if (physicsAccumulator.current >= PHYSICS_TIMESTEP_SECONDS) {
       assembly.resetDirectPerfCounters();
       const t0 = performance.now();
-      assembly.step(h);
+      while (
+        physicsAccumulator.current + 1e-12 >= PHYSICS_TIMESTEP_SECONDS &&
+        physicsSteps < MAX_PHYSICS_STEPS_PER_FRAME
+      ) {
+        assembly.step(PHYSICS_TIMESTEP_SECONDS);
+        physicsAccumulator.current -= PHYSICS_TIMESTEP_SECONDS;
+        physicsSteps++;
+      }
       stepMs.current = performance.now() - t0;
       stepCounts.current = assembly.directPerfCounters();
+    } else {
+      stepMs.current = 0;
+      stepCounts.current = { tangentAssemblies: 0, elementForceEvals: 0 };
     }
+    const simulatedDt = physicsSteps * PHYSICS_TIMESTEP_SECONDS;
+    physicsStep.current += physicsSteps;
     frame.current += 1;
 
     // contrast injection: a bolus front leaves the catheter tip and sweeps out through the vessel
@@ -594,7 +696,7 @@ function Engine() {
         return best / BOLUS_FRONT_SPEED;
       });
     }
-    injectClock.current += h;
+    injectClock.current += renderDt;
     const injT = injectClock.current;
     const srcContrast = bolus(injT); // opacity at the bolus source (for the metric readout)
     // per-branch contrast for this frame (fill sweep), filled in place to avoid per-frame allocation
@@ -687,6 +789,16 @@ function Engine() {
     rig.camera.up.set(0, 1, 0);
     rig.camera.lookAt(isoX, isoY, isoZ);
 
+    // Cosmetic fluoro pulsatility (fluoro-only, render-only): a faint ~72 bpm sinusoid that scales the
+    // vessel attenuation so the opacified tree shimmers with the arterial cycle. Equivalent to a ±3%
+    // vessel-radius/opacity scale at render time — it never feeds back into physics. Reuses the existing
+    // accumulated render clock (clock.current); no new allocation, no wall-clock call. The 3D view
+    // ignores uSigma, so the factor only ever affects the fluoro tone-map pass.
+    const vesselPulse =
+      s.view !== "3d"
+        ? 1 + PULSATILITY_AMPLITUDE * Math.sin(2 * Math.PI * PULSATILITY_HZ * clock.current)
+        : 1;
+
     // per-frame attenuation: bone fixed; walls faint; contrast fills the lumen following the sweep;
     // instruments always dense. (Bone sigma is set at build and never touched here.)
     for (const m of rig.meshes) {
@@ -695,10 +807,10 @@ function Engine() {
       else if (ud.kind === "sheath") ud.fluoro.uniforms.uSigma.value = 1.2;
       else if (ud.kind === "vessel") {
         const c = ud.branchIndex != null ? branchC[ud.branchIndex] : 0;
-        ud.fluoro.uniforms.uSigma.value = (0.05 + c * 2.6) * ud.atten;
+        ud.fluoro.uniforms.uSigma.value = (0.05 + c * 2.6) * ud.atten * vesselPulse;
       }
     }
-    rig.tonemap.uniforms.uTime.value += h;
+    rig.tonemap.uniforms.uTime.value += renderDt;
 
     // target marker
     const target = anatomy.targets.find((t) => t.id === s.targetId) ?? anatomy.targets[0];
@@ -730,7 +842,9 @@ function Engine() {
         gl.setClearColor(0x000000, 1);
         gl.clear(true, true, false);
         gl.render(rig.scene, rig.camera);
-        // restore the live (contrast + instruments) state for the live pass
+        // restore the live (contrast + instruments) state for the live pass. The mask pass above is
+        // left unpulsed (it is the static subtraction reference), so the pulsatility shimmer rides on
+        // the contrast column only — the wall component cancels in the subtraction, as in real DSA.
         rig.wire.visible = true;
         rig.sheath.visible = true;
         rig.sheathRing.visible = true;
@@ -738,7 +852,7 @@ function Engine() {
           const ud = m.userData as MeshMaterials;
           if (ud.kind === "vessel") {
             const c = ud.branchIndex != null ? branchC[ud.branchIndex] : 0;
-            ud.fluoro.uniforms.uSigma.value = (0.05 + c * 2.6) * ud.atten;
+            ud.fluoro.uniforms.uSigma.value = (0.05 + c * 2.6) * ud.atten * vesselPulse;
           }
         }
       }
@@ -757,12 +871,12 @@ function Engine() {
 
     // operator dosimetry / geometry readouts. Fluoroscopy = beam on; dose grows with beam time and
     // magnification (closer detector ⇒ smaller field ⇒ higher entrance dose).
-    procClock.current += h;
+    procClock.current += renderDt;
     const sid = dist.current;
     const mag = 100 / sid;
     if (s.view !== "3d") {
-      fluoroClock.current += h;
-      doseAcc.current += h * mag * mag * 2.4;
+      fluoroClock.current += renderDt;
+      doseAcc.current += renderDt * mag * mag * 2.4;
     }
 
     // on-image direction cue: screen-space unit vector from the wire tip to the active target
@@ -778,7 +892,7 @@ function Engine() {
 
     // metrics (throttled) — driven off the navigating guidewire
     const tipToTarget = inner.tip().distanceTo(target.pos);
-    if (tipToTarget < target.acceptance) reachedFor.current += h;
+    if (tipToTarget < target.acceptance) reachedFor.current += renderDt;
     else reachedFor.current = 0;
     if (clock.current - reportAt.current > 0.12) {
       reportAt.current = clock.current;
@@ -814,10 +928,12 @@ function Engine() {
       }
     }
 
+    if (!import.meta.env.DEV) return;
     const snapshot: SimDebugSnapshot = {
       frame: frame.current,
+      physicsStep: physicsStep.current,
       time: clock.current,
-      dt: h,
+      dt: simulatedDt,
       physicsMode,
       view: s.view,
       accessId: s.accessId,
@@ -834,14 +950,17 @@ function Engine() {
         contrast: srcContrast
       },
       rods: {
-        wire: rodDebug(inner, s.wire.deployed, prevWireTip.current, h),
-        sheath: rodDebug(outer, s.sheath.deployed, prevSheathTip.current, h)
+        wire: rodDebug(inner, s.wire.deployed, prevWireTip.current, simulatedDt),
+        sheath: rodDebug(outer, s.sheath.deployed, prevSheathTip.current, simulatedDt)
       },
       coax: {
         activeContacts: assembly.activeCoaxCount(),
         normalLoad: assembly.coaxNormalLoad(),
         innerExitPastOuterTip: assembly.innerExitPastOuterTip(),
-        maxCoveredInnerRho: assembly.maxCoveredInnerRho(),
+        maxCoveredPerpRho: assembly.maxCoveredPerpRho(),
+        maxCoveredTrueDistance: assembly.maxCoveredTrueDistance(),
+        maxUncontainedWallPenetration: assembly.maxUncontainedWallPenetration(),
+        divergedNodeCount: assembly.divergedCoaxCount(),
         innerClearance: assembly.innerClearance()
       },
       perf: {
@@ -863,6 +982,8 @@ function Engine() {
 export function Viewport() {
   return (
     <Canvas
+      aria-label="Interactive vascular navigation simulator"
+      role="img"
       frameloop="always"
       dpr={[1, 2]}
       gl={{ antialias: true, alpha: false }}

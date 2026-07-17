@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
-import { CosseratRod, GUIDEWIRE } from "./cosserat";
-import { buildNormalAnatomy } from "./anatomy";
+import { CosseratRod, GUIDEWIRE_DIRECT } from "./cosserat";
 import type { Anatomy } from "./types";
 import { buildGuidewireField, buildSheathField, type MaterialProfile } from "./material";
 import { cantileverTipDeflection } from "./beamfem/buckling";
@@ -51,19 +50,9 @@ function run(rod: CosseratRod, steps: number) {
   for (let i = 0; i < steps; i++) rod.step(1 / 60);
 }
 
-/** Cranial climb of the tip up the real anatomy after feeding `deployed` cm (pushability). */
-function navClimb(substeps: number, deployed = 28): number {
-  const anatomy = buildNormalAnatomy();
-  const access = anatomy.access[0].pos.clone();
-  const rod = new CosseratRod(anatomy, "rcfa", { ...GUIDEWIRE, substeps }, { deployed: 2, steer: 0.3, torque: 0 });
-  rod.input = { deployed, steer: 0.3, torque: 0 };
-  run(rod, 600);
-  return rod.tip().y - access.y;
-}
-
 /** Max lateral excursion of an over-fed column in a wide tube (bow). */
 function feedBow(): number {
-  const rod = new CosseratRod(tube(5, 14), "a", GUIDEWIRE);
+  const rod = new CosseratRod(tube(5, 14), "a", GUIDEWIRE_DIRECT);
   rod.input = { deployed: 24, steer: 0, torque: 0 };
   run(rod, 800);
   let m = 0;
@@ -79,44 +68,12 @@ function eiOf(profile: MaterialProfile, ellCm: number): number {
 }
 
 describe("validation rig — instrument mechanics", () => {
-  // INTENTIONALLY SKIPPED — this exercises the LEGACY XPBD lane (navClimb builds GUIDEWIRE with
-  // `substeps` as a knob), which is substep-DEPENDENT by construction and is being retired: α̃ = α/Δt_s²
-  // and the legacy lane has no real per-node inertia for α̃ to balance against, so a smaller Δt_s (more
-  // substeps) yields a softer rod (e.g. climb(S=2) ≈ 20 cm vs climb(S=4) ≈ 15 cm). Forcing the legacy
-  // lane to pass here would be a knowingly-false gate. The REAL substep-invariance proof is GREEN on the
-  // DIRECT lane (fixed D_SUBSTEPS implicit dynamic beam): see validation_calibrated.test.ts
-  // "SUBSTEP-INVARIANCE: navigated climb does not depend on the substep count" (~line 144, active gate
-  // on GUIDEWIRE_DIRECT). Phase G flipped the SHIPPED presets to direct but deliberately kept the legacy
-  // XPBD lane in cosserat.ts for comparison; this skip documents that lane's known substep-dependence
-  // and is removed when Phase H deletes the legacy lane.
-  it.skip("SUBSTEP-INVARIANT: navigation does not depend on the substep count (legacy lane — see direct-lane gate)", () => {
-    const s2 = navClimb(2);
-    const s4 = navClimb(4);
-    const relDiff = Math.abs(s4 - s2) / Math.max(0.1, Math.abs(s2));
-    expect(relDiff).toBeLessThan(0.15);
-  });
-
-  // INTENTIONALLY SKIPPED — this is a LEGACY-LANE gate (navClimb builds `GUIDEWIRE`, the XPBD preset)
-  // whose passing margin depended on the experimental `beamGain` shaft-fairing that ran on the legacy
-  // preset (beamGain=0.2). That O(N) banded fairing (beam.ts) was DELETED at the Phase-G flip — it was
-  // an uncalibrated crutch, not real EI. Without it the legacy lane still climbs (climb@12cm≈9.8cm,
-  // passes >3) but the deep-vs-shallow margin collapses (climb@36cm 22cm→12cm) because the bare
-  // Gauss-Seidel XPBD shaft accordions under deep over-feed. NOTE: the same is true of the DIRECT lane
-  // when fed SOLO — a bare force-fed wire with no proximal support snakes at the inlet and the tip
-  // stalls near its seed (that is real wire mechanics; it is why procedures feed through a sheath), so
-  // the ≈22 cm solo-climb expectation this test encoded was a fairing artifact, not physics. The
-  // climb-MAGNITUDE hard gate now lives in validation_calibrated.test.ts — "PUSHABILITY: feeding the
-  // shipped coax wire advances the tip cranially up the real anatomy" — on the shipped coax
-  // (wire-in-sheath) runtime (climb@36cm ≈ 43 cm, gated > 30 with deep > shallow + 8). Removed when
-  // Phase H deletes the legacy lane.
-  it.skip("PUSHABILITY: feeding advances the tip cranially up the real anatomy (legacy lane — fairing removed; direct coax gate in validation_calibrated)", () => {
-    const shallow = navClimb(2, 12);
-    const deep = navClimb(2, 36);
-    // eslint-disable-next-line no-console
-    console.log(`[pushability] climb@12cm=${shallow.toFixed(2)}cm  climb@36cm=${deep.toFixed(2)}cm`);
-    expect(shallow).toBeGreaterThan(3); // it actually climbs out of the femoral/iliac
-    expect(deep).toBeGreaterThan(shallow + 8); // more feed ⇒ meaningfully more cranial progress
-  });
+  // The two legacy-lane gates that lived here (SUBSTEP-INVARIANT + PUSHABILITY, both built `GUIDEWIRE`
+  // with `substeps` as a knob and were kept as it.skip) were DELETED at the Phase-H flip when the legacy
+  // XPBD lane was removed from cosserat.ts. Their replacements run GREEN on the shipped direct lane in
+  // validation_calibrated.test.ts: "SUBSTEP-INVARIANCE: navigated climb does not depend on the substep
+  // count" (direct lane) and "PUSHABILITY: feeding the shipped coax wire advances the tip cranially up
+  // the real anatomy" (shipped wire-in-sheath coax).
 
   it("FEED TRANSPORT: insertion itself does not create artificial over-fed column bow", () => {
     // After feed transport moves the old inlet material forward before a new node is born, the

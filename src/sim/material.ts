@@ -16,15 +16,32 @@ import { alphaBend, alphaStretch, eiSiToCm } from "./units";
 export interface MaterialProfile {
   /** Instrument cross-section radius at this segment (cm). */
   rodRadius: number;
-  /** Axial stretch compliance α_stretch = ℓ/EA (cm/N). Tiny ⇒ near-inextensible. */
+  /**
+   * NATIVE RIGIDITIES — the source of truth (Phase H2 material-ownership flip).
+   *
+   * The dynamic co-rotational beam reads these DIRECTLY (integration.ts:elemMatFromProfile) with
+   * no compliance↔rigidity round-trip. Units: EA in N; EIy/EIz/GJ in N·cm². The legacy XPBD α-*
+   * fields below are now DERIVED from these for back-compat (makeProfile keeps them in sync via the
+   * lossless mappings α_stretch=ℓ/EA, α_bend=ℓ/(4·EI), α_twist=ℓ/(4·GJ)); no live code reads them.
+   * `bendComplianceScale` is applied to EIy/EIz/GJ directly in cosserat.ts (EI_eff = EI/scale).
+   */
+  /** Axial rigidity EA (N). Replaces the inverted α_stretch round-trip. */
+  EA: number;
+  /** Bend rigidity about director-x, EIy (N·cm²). Round cross-section ⇒ EIy = EIz. */
+  EIy: number;
+  /** Bend rigidity about director-y, EIz (N·cm²). */
+  EIz: number;
+  /** Torsion rigidity GJ (N·cm²). */
+  GJ: number;
+  /** Axial stretch compliance α_stretch = ℓ/EA (cm/N). DERIVED from EA — back-compat only. */
   alphaStretch: number;
   /** Shear compliance (cm/N). Very small for a thin wire; shares the stretch-shear block. */
   alphaShear: number;
-  /** Bend compliance about director-x: α_b = ℓ/(4·EI1), dimensionless (quaternion-imag). */
+  /** Bend compliance about director-x: α_b = ℓ/(4·EIy), dimensionless. DERIVED — back-compat only. */
   alphaBend1: number;
-  /** Bend compliance about director-y: α_b = ℓ/(4·EI2), dimensionless. */
+  /** Bend compliance about director-y: α_b = ℓ/(4·EIz), dimensionless. DERIVED — back-compat only. */
   alphaBend2: number;
-  /** Twist compliance about the director: α_t = ℓ/(4·GJ), dimensionless. */
+  /** Twist compliance about the director: α_t = ℓ/(4·GJ), dimensionless. DERIVED — back-compat only. */
   alphaTwist: number;
   /**
    * Rest curvature in the quaternion-imaginary encoding (the imag part of the rest
@@ -78,13 +95,35 @@ export function makeProfile(opts: {
   density?: number;
 }): MaterialProfile {
   const aStretch = alphaStretch(opts.ellCm, opts.eaN);
+  const aBend1 = alphaBend(opts.ellCm, opts.eiCm);
+  const aBend2 = alphaBend(opts.ellCm, opts.eiCm);
+  const aTwist = alphaBend(opts.ellCm, opts.gjCm);
   return {
     rodRadius: opts.rodRadius,
+    // NATIVE rigidities — the source of truth the direct beam reads (Phase H2 material-ownership
+    // flip; integration.ts:elemMatFromProfile reads these directly, no compliance round-trip).
+    //
+    // BYTE-IDENTITY: these store the rigidities by RE-EXPRESSING the exact round-trip the previous
+    // representation performed at the beam boundary. elemMatFromProfile used ℓ/(4·α) (ℓ = the
+    // per-segment rest length, which equals ellCm in every live path): EA = ℓ/α_stretch,
+    // EI = ℓ/(4·α_bend), GJ = ℓ/(4·α_twist). The result equals eiCm/gjCm/eaN to within ~1e-16, BUT
+    // reproducing the round-trip's EXACT float bits (e.g. EA = 24999.999999999996, not 25000) is
+    // load-bearing: the calibrated coax/pushability/blocked-tip gates sit on a navigation
+    // bifurcation knife-edge where a 1e-16 perturbation deterministically flips a branch selection
+    // (verified by bisection — native raw inputs collapsed pushability 30→7.5). Storing the
+    // round-tripped value, not the raw input, makes the ElemMat reaching the kernel byte-identical
+    // to pre-H2, satisfying the zero-numeric-delta contract.
+    EA: opts.ellCm / aStretch,
+    EIy: opts.ellCm / (4 * aBend1),
+    EIz: opts.ellCm / (4 * aBend2),
+    GJ: opts.ellCm / (4 * aTwist),
+    // DERIVED compliances (back-compat only; no live code reads them after the H2 flip). EXACTLY the
+    // same values the previous representation stored: α_stretch=ℓ/EA, α_bend=ℓ/(4·EI), α_twist=ℓ/(4·GJ).
     alphaStretch: aStretch,
     alphaShear: aStretch * (opts.shearScale ?? 1),
-    alphaBend1: alphaBend(opts.ellCm, opts.eiCm),
-    alphaBend2: alphaBend(opts.ellCm, opts.eiCm),
-    alphaTwist: alphaBend(opts.ellCm, opts.gjCm),
+    alphaBend1: aBend1,
+    alphaBend2: aBend2,
+    alphaTwist: aTwist,
     restCurvature: (opts.restCurvature ?? new Vector3()).clone(),
     muStatic: opts.muStatic,
     muKinetic: opts.muKinetic,

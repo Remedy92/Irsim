@@ -8,4 +8,5 @@ dist/
 # verification artifacts
 .playwright-mcp/
 /*.png
+/output/
 .vercel

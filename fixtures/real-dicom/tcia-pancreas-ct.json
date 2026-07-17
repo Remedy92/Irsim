@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "tcia-pancreas-ct-v2-series-41202274843063370955090296887703130",
+  "description": "Real portal-venous contrast-enhanced abdominal CT used as a DICOM decoding, source-review, and non-synthetic overlay gate. It is not arterial-phase CTA and is not vascular ground truth.",
+  "source": {
+    "collection": "Pancreas-CT",
+    "collectionUrl": "https://www.cancerimagingarchive.net/collection/pancreas-ct/",
+    "doi": "10.7937/K9/TCIA.2016.tNB1kqBU",
+    "citation": "Roth H, Farag A, Turkbey EB, Lu L, Liu J, Summers RM. Data From Pancreas-CT (Version 2). The Cancer Imaging Archive, 2016.",
+    "phase": "portal-venous, approximately 70 seconds after intravenous contrast",
+    "seriesInstanceUid": "1.2.826.0.1.3680043.2.1125.1.41202274843063370955090296887703130"
+  },
+  "license": {
+    "name": "Creative Commons Attribution 3.0 Unported",
+    "url": "https://creativecommons.org/licenses/by/3.0/",
+    "tciaDataUsagePolicy": "https://www.cancerimagingarchive.net/data-usage-policies-and-restrictions/",
+    "requiresExplicitAcceptanceBeforeDownload": true
+  },
+  "download": {
+    "url": "https://services.cancerimagingarchive.net/nbia-api/services/v1/getImage?SeriesInstanceUID=1.2.826.0.1.3680043.2.1125.1.41202274843063370955090296887703130",
+    "expectedDicomFiles": 181,
+    "dicomContentFingerprintAlgorithm": "SHA-256 of the newline-delimited, lexicographically filename-sorted per-file SHA-256 hex digests",
+    "dicomContentSha256": "3a385014715a82ddda33041e4c318b611373279c1854ed6977b388263fa60e43"
+  },
+  "expected": {
+    "dimensions": [512, 512, 181],
+    "displaySpacingText": "0.98 × 0.98 × 1.00 mm",
+    "proposalOverlay": {
+      "sliceNumber": 91,
+      "anatomicalExpectation": "A single compact threshold component immediately anterior to the vertebral body in the mid-abdomen; this is a regression landmark, not a validated vessel label.",
+      "cyanPixelCount": [200, 320],
+      "cyanBounds": {
+        "minColumn": [214, 220],
+        "maxColumn": [232, 238],
+        "minRow": [226, 232],
+        "maxRow": [245, 251]
+      }
+    },
+    "seededTrack": {
+      "seed": {
+        "sliceNumber": 91,
+        "row": 238,
+        "column": 226
+      },
+      "minimumCenterlineSamples": 160,
+      "minimumCoveragePercent": 85,
+      "requiresPassingSingleTrunkTopology": true,
+      "requiresCheckpointReview": true,
+      "requiresSeparateAttestation": true
+    }
+  }
+}
